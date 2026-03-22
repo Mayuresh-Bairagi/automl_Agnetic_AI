@@ -1,0 +1,27 @@
+fastapi
+uvicorn
+pandas
+numpy
+scikit-learn
+xgboost
+lightgbm
+catboost
+joblib
+matplotlib
+seaborn
+plotly
+ydata-profiling
+pycaret
+openpyxl
+ipykernel
+structlog
+langchain
+langchain_community
+langchain_classic
+langchain_google_genai
+langchain_groq
+python-multipart
+langgraph
+python-dotenv
+
+-e .
