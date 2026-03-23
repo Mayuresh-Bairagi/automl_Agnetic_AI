@@ -1,4 +1,5 @@
 import pandas as pd
+import time
 from expection.customExpection import AutoML_Exception
 from model.models import *
 from utils.model_loader import ModelLoader
@@ -45,19 +46,90 @@ class DataTypeAnalyzer:
 
             self.log.info("Meta-data analysis chain initialized")
 
-            response = chain.invoke(
+            response = self._invoke_with_retry(
+                chain,
                 {
                     'return_instructions': self.parser.get_format_instructions(),
                     'Column_metadata': column_meta_data
-                }
+                },
             )
 
             self.log.info("Metadata extraction successful", keys=response)
             return response
 
         except Exception as e:
+            message = str(e).lower()
+            is_rate_limited = (
+                "429" in message
+                or "resource_exhausted" in message
+                or "rate" in message and "limit" in message
+                or "quota" in message
+            )
+            if is_rate_limited:
+                self.log.warning("LLM rate-limited; using deterministic dtype fallback", error=str(e))
+                return self._fallback_recommendations(self.df)
+
             self.log.error(f"Error during data type analysis: {e}")
             raise AutoML_Exception(f"Error during data type analysis: {e}")
+
+    def _fallback_recommendations(self, df: pd.DataFrame) -> List[Dict]:
+        recommendations: List[Dict] = []
+        for col in df.columns:
+            series = df[col]
+            non_null = series.dropna()
+            suggested_dtype = "object"
+            reason = "Defaulted to object"
+
+            if pd.api.types.is_bool_dtype(series):
+                suggested_dtype = "boolean"
+                reason = "Detected boolean dtype"
+            else:
+                numeric = pd.to_numeric(non_null, errors="coerce")
+                numeric_ratio = float(numeric.notna().mean()) if len(non_null) else 0.0
+                if numeric_ratio >= 0.9 and len(non_null) > 0:
+                    is_integer_like = (numeric.dropna() % 1 == 0).all()
+                    suggested_dtype = "integer" if is_integer_like else "float"
+                    reason = "Most values parse as numeric"
+                else:
+                    dt = pd.to_datetime(non_null, errors="coerce", dayfirst=True)
+                    dt_ratio = float(dt.notna().mean()) if len(non_null) else 0.0
+                    if dt_ratio >= 0.9 and len(non_null) > 0:
+                        suggested_dtype = "date"
+                        reason = "Most values parse as datetime"
+
+            recommendations.append(
+                {
+                    "column_name": str(col),
+                    "suggested_dtype": suggested_dtype,
+                    "reason": reason,
+                }
+            )
+
+        return recommendations
+
+    def _invoke_with_retry(self, chain, payload, max_attempts: int = 5):
+        for attempt in range(1, max_attempts + 1):
+            try:
+                return chain.invoke(payload)
+            except Exception as e:
+                message = str(e).lower()
+                is_rate_limited = (
+                    "429" in message
+                    or "resource_exhausted" in message
+                    or "rate" in message and "limit" in message
+                    or "quota" in message
+                )
+                if (not is_rate_limited) or attempt == max_attempts:
+                    raise
+
+                wait_seconds = min(30, 2 ** attempt)
+                self.log.warning(
+                    "Rate limit from LLM; retrying",
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    wait_seconds=wait_seconds,
+                )
+                time.sleep(wait_seconds)
 
     def generate_conversion_code(self, recommendations: List[Dict]) -> str:
         code_lines = ["import pandas as pd"]

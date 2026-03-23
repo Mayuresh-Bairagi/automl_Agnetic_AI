@@ -129,6 +129,74 @@ class DatasetQA:
         ]
         return "\n".join(code_lines).strip()
 
+    @staticmethod
+    def _is_dataset_description_question(question: str) -> bool:
+        q = (question or "").strip().lower()
+        patterns = [
+            r"\bdescribe\b.*\bdataset\b",
+            r"\bdataset\b.*\bdescription\b",
+            r"\bdataset\b.*\boverview\b",
+            r"\bsummary\b.*\bdataset\b",
+            r"\bwhat\s+is\s+the\s+description\s+of\s+dataset\b",
+        ]
+        return any(re.search(p, q) for p in patterns)
+
+    def _dataset_overview_text(self, df: pd.DataFrame) -> str:
+        rows, cols = df.shape
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=["object", "category", "bool"]).columns.tolist()
+
+        # Missingness insights
+        missing_pct = (df.isnull().mean() * 100).sort_values(ascending=False)
+        top_missing = missing_pct[missing_pct > 0].head(5)
+
+        # Low-information columns
+        constant_cols = [c for c in df.columns if df[c].nunique(dropna=False) <= 1]
+
+        # Common weather target hints
+        target_candidates = [c for c in ["RainTomorrow", "RainToday"] if c in df.columns]
+
+        lines = [
+            f"Dataset overview for session {self.session_id}:",
+            f"- Shape: {rows} rows x {cols} columns",
+            f"- Feature types: {len(numeric_cols)} numeric, {len(categorical_cols)} categorical/boolean",
+        ]
+
+        if categorical_cols:
+            lines.append(
+                "- Example categorical columns: "
+                + ", ".join(categorical_cols[:6])
+            )
+        if numeric_cols:
+            lines.append(
+                "- Example numeric columns: "
+                + ", ".join(numeric_cols[:6])
+            )
+
+        if target_candidates:
+            lines.append(
+                "- Candidate target columns: " + ", ".join(target_candidates)
+            )
+            for target_col in target_candidates:
+                counts = df[target_col].value_counts(dropna=False)
+                preview = ", ".join([f"{idx}={int(val)}" for idx, val in counts.head(3).items()])
+                lines.append(f"- {target_col} distribution: {preview}")
+
+        if not top_missing.empty:
+            missing_desc = ", ".join([f"{col} ({val:.1f}%)" for col, val in top_missing.items()])
+            lines.append(f"- Highest missingness columns: {missing_desc}")
+        else:
+            lines.append("- Missing values: no missing values detected")
+
+        if constant_cols:
+            lines.append("- Constant/near-useless columns: " + ", ".join(constant_cols[:8]))
+
+        lines.append(
+            "- Note: for classification tasks, prefer F1/ROC-AUC along with accuracy when classes are imbalanced."
+        )
+
+        return "\n".join(lines)
+
     def _run_code(self, code: str, df: pd.DataFrame) -> Any:
         """Execute generated pandas code in a restricted namespace with a timeout."""
         namespace: Dict[str, Any] = {
@@ -180,6 +248,16 @@ class DatasetQA:
         """
         try:
             df = self._load_df()
+
+            # Deterministic path for dataset overview questions to avoid raw-stat dumps.
+            if self._is_dataset_description_question(question):
+                return {
+                    "question": question,
+                    "answer": self._dataset_overview_text(df),
+                    "code": "",
+                    "error": None,
+                }
+
             schema = self._schema_summary(df)
 
             llm_response = self._chain.invoke(

@@ -9,12 +9,14 @@ compatible) so the frontend can render them directly with Plotly.js.
 
 Available charts
 ----------------
-- distribution   : histogram + KDE for each numeric column
+- distribution   : histogram for one representative numeric column
 - correlation    : Pearson correlation heatmap
 - scatter        : scatter plot matrix (up to 5 numeric columns)
-- bar            : top-N value counts for each categorical column
-- boxplot        : box-and-whisker for numeric columns grouped by a category
+- bar            : value counts for one representative categorical column
+- boxplot        : box-and-whisker for one representative numeric column
 - missing_values : horizontal bar chart showing % missing per column
+
+Output is capped to a maximum of 4 charts for a concise frontend dashboard.
 """
 
 from __future__ import annotations
@@ -27,8 +29,6 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-import plotly.figure_factory as ff
-from plotly.subplots import make_subplots
 
 from expection.customExpection import AutoML_Exception
 from logger.customlogger import CustomLogger
@@ -37,7 +37,7 @@ log = CustomLogger().get_logger(__name__)
 
 _MAX_CATEGORIES = 15   # cap categorical bar charts
 _MAX_SCATTER_COLS = 5  # cap scatter matrix columns
-_MAX_BOXPLOT_COLS = 8  # cap boxplot columns to keep response size manageable
+_MAX_DASHBOARD_CHARTS = 4  # keep frontend payload concise and meaningful
 
 
 class InteractiveDashboard:
@@ -86,24 +86,32 @@ class InteractiveDashboard:
     # Individual chart builders
     # ------------------------------------------------------------------
 
-    def _chart_distributions(self, df: pd.DataFrame) -> List[Dict]:
-        """Histogram (+ optional KDE) for each numeric column."""
+    def _chart_distributions(self, df: pd.DataFrame) -> Optional[Dict]:
+        """Single representative histogram for the most variable numeric column."""
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        charts = []
+        if not numeric_cols:
+            return None
+
+        # Prefer the numeric column with highest variance for richer distribution signal.
+        scored_cols = []
         for col in numeric_cols:
             series = df[col].dropna()
-            if series.empty:
-                continue
-            fig = px.histogram(
-                df,
-                x=col,
-                nbins=40,
-                marginal="box",
-                title=f"Distribution — {col}",
-                template="plotly_white",
-            )
-            charts.append({"type": "distribution", "column": col, "figure": self._fig_to_dict(fig)})
-        return charts
+            if not series.empty:
+                scored_cols.append((col, float(series.var())))
+
+        if not scored_cols:
+            return None
+
+        best_col = max(scored_cols, key=lambda x: x[1])[0]
+        fig = px.histogram(
+            df,
+            x=best_col,
+            nbins=40,
+            marginal="box",
+            title=f"Distribution — {best_col}",
+            template="plotly_white",
+        )
+        return {"type": "distribution", "column": best_col, "figure": self._fig_to_dict(fig)}
 
     def _chart_correlation(self, df: pd.DataFrame) -> Optional[Dict]:
         """Pearson correlation heatmap for numeric columns."""
@@ -138,27 +146,35 @@ class InteractiveDashboard:
         fig.update_traces(diagonal_visible=False)
         return {"type": "scatter_matrix", "columns": cols, "figure": self._fig_to_dict(fig)}
 
-    def _chart_bar_categorical(self, df: pd.DataFrame) -> List[Dict]:
-        """Top-N value counts for each low-cardinality categorical column."""
+    def _chart_bar_categorical(self, df: pd.DataFrame) -> Optional[Dict]:
+        """Single representative value-count chart for one categorical column."""
         cat_cols = df.select_dtypes(include=["object", "category"]).columns.tolist()
-        charts = []
+        best_col = None
+        best_unique = -1
+
         for col in cat_cols:
             n_unique = df[col].nunique()
             if n_unique > _MAX_CATEGORIES or n_unique < 2:
                 continue
-            counts = df[col].value_counts().reset_index()
-            counts.columns = [col, "count"]
-            fig = px.bar(
-                counts,
-                x=col,
-                y="count",
-                title=f"Value Counts — {col}",
-                template="plotly_white",
-                color="count",
-                color_continuous_scale="Blues",
-            )
-            charts.append({"type": "bar", "column": col, "figure": self._fig_to_dict(fig)})
-        return charts
+            if n_unique > best_unique:
+                best_unique = n_unique
+                best_col = col
+
+        if not best_col:
+            return None
+
+        counts = df[best_col].value_counts().reset_index()
+        counts.columns = [best_col, "count"]
+        fig = px.bar(
+            counts,
+            x=best_col,
+            y="count",
+            title=f"Value Counts — {best_col}",
+            template="plotly_white",
+            color="count",
+            color_continuous_scale="Blues",
+        )
+        return {"type": "bar", "column": best_col, "figure": self._fig_to_dict(fig)}
 
     def _chart_missing_values(self, df: pd.DataFrame) -> Optional[Dict]:
         """Horizontal bar chart showing % missing per column (only missing cols)."""
@@ -178,20 +194,35 @@ class InteractiveDashboard:
         )
         return {"type": "missing_values", "figure": self._fig_to_dict(fig)}
 
-    def _chart_boxplot(self, df: pd.DataFrame) -> List[Dict]:
-        """Box plots for numeric columns (one figure per column)."""
+    def _chart_boxplot(self, df: pd.DataFrame) -> Optional[Dict]:
+        """Single representative box plot for a numeric column."""
         numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        charts = []
-        for col in numeric_cols[:_MAX_BOXPLOT_COLS]:
-            fig = px.box(
-                df,
-                y=col,
-                title=f"Box Plot — {col}",
-                template="plotly_white",
-                points="outliers",
-            )
-            charts.append({"type": "boxplot", "column": col, "figure": self._fig_to_dict(fig)})
-        return charts
+        if not numeric_cols:
+            return None
+
+        # Use median absolute deviation proxy by selecting highest std deviation column.
+        best_col = None
+        best_std = -1.0
+        for col in numeric_cols:
+            series = df[col].dropna()
+            if series.empty:
+                continue
+            std_val = float(series.std())
+            if std_val > best_std:
+                best_std = std_val
+                best_col = col
+
+        if not best_col:
+            return None
+
+        fig = px.box(
+            df,
+            y=best_col,
+            title=f"Box Plot — {best_col}",
+            template="plotly_white",
+            points="outliers",
+        )
+        return {"type": "boxplot", "column": best_col, "figure": self._fig_to_dict(fig)}
 
     # ------------------------------------------------------------------
     # Public API
@@ -217,10 +248,16 @@ class InteractiveDashboard:
             all_types = {"distribution", "correlation", "scatter", "bar", "missing_values", "boxplot"}
             requested = set(chart_types) if chart_types else all_types
 
+            invalid = requested - all_types
+            if invalid:
+                raise ValueError(f"Unsupported chart type(s): {sorted(invalid)}")
+
             charts: List[Dict] = []
 
             if "distribution" in requested:
-                charts.extend(self._chart_distributions(df))
+                chart = self._chart_distributions(df)
+                if chart:
+                    charts.append(chart)
             if "correlation" in requested:
                 chart = self._chart_correlation(df)
                 if chart:
@@ -230,13 +267,29 @@ class InteractiveDashboard:
                 if chart:
                     charts.append(chart)
             if "bar" in requested:
-                charts.extend(self._chart_bar_categorical(df))
+                chart = self._chart_bar_categorical(df)
+                if chart:
+                    charts.append(chart)
             if "missing_values" in requested:
                 chart = self._chart_missing_values(df)
                 if chart:
                     charts.append(chart)
             if "boxplot" in requested:
-                charts.extend(self._chart_boxplot(df))
+                chart = self._chart_boxplot(df)
+                if chart:
+                    charts.append(chart)
+
+            # Prioritise a compact, frontend-friendly dashboard with the most informative charts first.
+            priority_order = {
+                "missing_values": 0,
+                "correlation": 1,
+                "distribution": 2,
+                "bar": 3,
+                "scatter_matrix": 4,
+                "boxplot": 5,
+            }
+            charts.sort(key=lambda c: priority_order.get(c.get("type", ""), 99))
+            charts = charts[:_MAX_DASHBOARD_CHARTS]
 
             log.info(
                 "Dashboard charts generated",

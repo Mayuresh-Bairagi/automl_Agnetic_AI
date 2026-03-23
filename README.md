@@ -104,6 +104,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 | `/agent/run` | POST | Execute end-to-end AutoML agent pipeline |
 | `/chat` | POST | Ask natural-language questions about dataset |
 | `/dashboard/charts` | POST | Generate Plotly chart payloads |
+| `/session/{session_id}/history` | GET | Return full session artifacts and history metadata |
 
 ## 📦 Key Dependencies
 

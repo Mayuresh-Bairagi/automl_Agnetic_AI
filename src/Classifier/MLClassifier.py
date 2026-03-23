@@ -82,10 +82,26 @@ class AutoMLClassifier:
                 raise FileNotFoundError(f"Dataset not found at {self.database_path}")
 
             self.df = pd.read_csv(self.database_path)
+            if self.df.empty:
+                raise ValueError(
+                    "Processed dataset is empty after cleaning; cannot train classification models."
+                )
             self.selector = FeatureSelector(session_id, problem_statement, result, df)
             self.context = self.selector.llm_response()
 
-            self.target_col = self.context["target_col"]
+            if self.context is None or not isinstance(self.context, dict):
+                self.logger.warning(
+                    "Feature selector context missing or invalid; using fallback",
+                    context_type=str(type(self.context)),
+                )
+                self.context = {
+                    "target_col": result.get("target_variable") if isinstance(result, dict) else None,
+                    "dropped_features": [],
+                }
+
+            self.target_col = self.context.get("target_col") or (result.get("target_variable") if isinstance(result, dict) else None)
+            if not self.target_col:
+                raise ValueError("Unable to determine target column from feature selector or target detection result")
             self.dropped_features: List[str] = self.context.get("dropped_features") or []
             self.test_size = test_size
             self.random_state = random_state

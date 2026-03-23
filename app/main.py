@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from io import BytesIO
+from datetime import datetime
 import pandas as pd
 import uvicorn
 
@@ -293,12 +294,12 @@ async def chat(request: QARequest):
 @app.post("/dashboard/charts", response_model=DashboardResponse, summary="Generate interactive Power-BI style charts")
 async def dashboard_charts(request: DashboardRequest):
     """
-    Generate a set of interactive Plotly chart specifications for the uploaded
-    dataset.  The frontend can render these directly with Plotly.js.
+    Generate a compact set of interactive Plotly chart specifications for the
+    uploaded dataset. The frontend can render these directly with Plotly.js.
 
     Supported chart types: ``distribution``, ``correlation``, ``scatter``,
     ``bar``, ``missing_values``, ``boxplot``.  Pass ``chart_types=null`` to
-    receive all available charts.
+    receive a curated dashboard (maximum 4 meaningful charts).
     """
     try:
         dashboard = InteractiveDashboard(session_id=request.session_id)
@@ -313,6 +314,97 @@ async def dashboard_charts(request: DashboardRequest):
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Dashboard generation failed: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Session history endpoint
+# ---------------------------------------------------------------------------
+
+@app.get("/session/{session_id}/history", summary="Get full history and artifacts for a session")
+async def session_history(session_id: str):
+    """
+    Return a consolidated view of all known artifacts generated for a session.
+
+    Includes data file presence, dataset shapes, EDA report URL, trained model
+    files, and file-level metadata so frontend can render a session timeline.
+    """
+    try:
+        session_path = folder_path / session_id
+        if not session_path.exists() or not session_path.is_dir():
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+        raw_file = session_path / "raw_file.csv"
+        processed_file = session_path / "processed_file.csv"
+        eda_file = session_path / "index.html"
+
+        raw_shape = None
+        processed_shape = None
+
+        if raw_file.exists():
+            try:
+                raw_df = pd.read_csv(raw_file)
+                raw_shape = {"rows": int(raw_df.shape[0]), "columns": int(raw_df.shape[1])}
+            except Exception:
+                raw_shape = None
+
+        if processed_file.exists():
+            try:
+                processed_df = pd.read_csv(processed_file)
+                processed_shape = {
+                    "rows": int(processed_df.shape[0]),
+                    "columns": int(processed_df.shape[1]),
+                }
+            except Exception:
+                processed_shape = None
+
+        model_files = sorted([p.name for p in session_path.glob("*.joblib")])
+        trained_models = [
+            p.replace(".joblib", "")
+            for p in model_files
+            if p.lower() != "preprocessing.joblib"
+        ]
+
+        files = []
+        for f in sorted(session_path.iterdir(), key=lambda x: x.name.lower()):
+            if f.is_file():
+                files.append(
+                    {
+                        "name": f.name,
+                        "size_bytes": int(f.stat().st_size),
+                        "modified_at": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                    }
+                )
+
+        return {
+            "session_id": session_id,
+            "session_path": str(session_path),
+            "artifacts": {
+                "raw_file": raw_file.exists(),
+                "processed_file": processed_file.exists(),
+                "eda_report": eda_file.exists(),
+                "preprocessing": "preprocessing.joblib" in model_files,
+                "trained_models": bool(trained_models),
+            },
+            "dataset_summary": {
+                "raw_shape": raw_shape,
+                "processed_shape": processed_shape,
+            },
+            "eda": {
+                "available": eda_file.exists(),
+                "url": f"http://127.0.0.1:8000/data/{session_id}/index.html" if eda_file.exists() else None,
+            },
+            "models": {
+                "count": len(trained_models),
+                "names": trained_models,
+                "files": model_files,
+            },
+            "files": files,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch session history: {str(e)}")
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

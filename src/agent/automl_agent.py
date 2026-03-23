@@ -68,6 +68,11 @@ def _load_dataset(state: AgentState) -> AgentState:
             raise FileNotFoundError(f"Processed dataset not found: {csv_path}")
 
         df = pd.read_csv(csv_path)
+        if df.empty:
+            raise ValueError(
+                "Processed dataset is empty after cleaning. Please upload data with fewer missing rows "
+                "or relax dropna/drop_duplicates in feature engineering."
+            )
         log.info("Dataset loaded", session_id=session_id, shape=str(df.shape))
         return {**state, "df": df, "status": "ok"}
     except Exception as exc:

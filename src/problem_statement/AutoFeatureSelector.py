@@ -65,10 +65,19 @@ class FeatureSelector:
 
     def _regression_selection(self):
         try:
-            if not np.issubdtype(self.df[self.target].dtype, np.number):
-                raise ValueError("Regression target must be numeric")
+            if self.df is None or self.df.empty:
+                raise ValueError("Input dataframe is empty for regression feature selection")
 
-            corr = self.df.corr(numeric_only=True)
+            # Coerce target to numeric for robustness (common when CSV inference gives object).
+            target_numeric = pd.to_numeric(self.df[self.target], errors="coerce")
+            valid_ratio = target_numeric.notna().mean() if len(target_numeric) else 0
+            if valid_ratio < 0.5:
+                raise ValueError("Regression target must be mostly numeric")
+
+            df_numeric_target = self.df.copy()
+            df_numeric_target[self.target] = target_numeric
+
+            corr = df_numeric_target.corr(numeric_only=True)
             if self.target not in corr.columns:
                 raise ValueError("Target column not numeric or not in DataFrame")
 
@@ -81,7 +90,7 @@ class FeatureSelector:
             return {
                 "features": selected_features,
                 "meta": {"method": "correlation", "target_corr": target_corr.to_dict()},
-                "dtypes": self.df.dtypes.astype(str).to_dict(),
+                "dtypes": df_numeric_target.dtypes.astype(str).to_dict(),
                 "correlation_matrix": corr.to_dict()
             }
         except Exception as e:
@@ -176,6 +185,38 @@ class FeatureSelector:
                 "return_instructions": self.parser.get_format_instructions(),
                 "metadata_json": meta_data
             })
+
+            # Defensive normalisation: parser/LLM can return None or non-dict shapes.
+            if response is None:
+                self.logger.warning("LLM returned None for feature context; using fallback metadata")
+                return {
+                    "target_col": self.target,
+                    "selected_features": meta_data.get("features", []),
+                    "dropped_features": [],
+                    "ranked_features": [],
+                }
+
+            if hasattr(response, "model_dump"):
+                response = response.model_dump()
+            elif hasattr(response, "dict"):
+                response = response.dict()
+
+            if not isinstance(response, dict):
+                self.logger.warning(
+                    "LLM returned unexpected feature context type; using fallback metadata",
+                    response_type=str(type(response)),
+                )
+                return {
+                    "target_col": self.target,
+                    "selected_features": meta_data.get("features", []),
+                    "dropped_features": [],
+                    "ranked_features": [],
+                }
+
+            response.setdefault("target_col", self.target)
+            response.setdefault("selected_features", meta_data.get("features", []))
+            response.setdefault("dropped_features", [])
+            response.setdefault("ranked_features", [])
 
             self.logger.info("LLM response generated successfully")
             return response

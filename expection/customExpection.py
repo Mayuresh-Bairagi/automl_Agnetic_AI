@@ -26,7 +26,18 @@ class AutoML_Exception(Exception):
         super().__init__(str(error_message))
         self.error_message = str(error_message)
 
-        exc_type, exc_value, exc_tb = error_details.exc_info()
+        # Backward-compatible handling:
+        # - expected: pass `sys` and read active exception via sys.exc_info()
+        # - common in codebase: pass caught Exception instance as second argument
+        if hasattr(error_details, "exc_info"):
+            exc_type, exc_value, exc_tb = error_details.exc_info()
+        elif isinstance(error_details, BaseException):
+            exc_type = type(error_details)
+            exc_value = error_details
+            exc_tb = error_details.__traceback__
+        else:
+            exc_type, exc_value, exc_tb = sys.exc_info()
+
         if exc_tb is not None:
             self.file_name = exc_tb.tb_frame.f_code.co_filename
             self.lineno = exc_tb.tb_lineno

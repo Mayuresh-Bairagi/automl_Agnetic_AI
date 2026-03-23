@@ -11,7 +11,8 @@ log = CustomLogger().get_logger(__name__)
 
 class ModelLoader:
     def __init__(self) -> None:
-        load_dotenv()
+        # Ensure newly rotated keys in .env override stale shell env values.
+        load_dotenv(override=True)
         self._validate_env()
         self.config = load_config()
         log.info("Configurations loaded successfully",config_keys = list(self.config.keys()))
@@ -56,8 +57,10 @@ class ModelLoader:
         if provider == "google":
             llm = ChatGoogleGenerativeAI(
                 model = model_name,
+                api_key = self.api_keys["GOOGLE_API_KEY"],
                 temperature = temperature,
-                max_output_tokens = max_tokens
+                max_output_tokens = max_tokens,
+                max_retries = 6,
             )
             return llm 
         

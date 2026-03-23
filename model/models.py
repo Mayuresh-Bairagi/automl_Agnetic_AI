@@ -94,7 +94,7 @@ class QAResponse(BaseModel):
 class DashboardRequest(BaseModel):
     """Request body for the /dashboard/charts endpoint."""
     session_id: str
-    chart_types: Optional[List[str]] = None  # None → all charts
+    chart_types: Optional[List[str]] = None  # None -> curated chart set (max 4 charts)
 
 
 class DashboardResponse(BaseModel):
