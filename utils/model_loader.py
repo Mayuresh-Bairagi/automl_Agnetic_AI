@@ -67,7 +67,8 @@ class ModelLoader:
         provider = llm_config.get("provider")
         model_name = llm_config.get("model_name")
         temperature = llm_config.get("temperature", 0.2)
-        max_tokens = llm_config.get("max_output_tokens", llm_config.get("max_tokens", 2048))
+        default_max_tokens = llm_config.get("max_tokens", 2048)
+        max_tokens = llm_config.get("max_output_tokens", default_max_tokens)
 
         log.info("Loading LLM", provider=provider, model=model_name, temperature=temperature, max_tokens=max_tokens)
 
@@ -90,6 +91,10 @@ class ModelLoader:
                 llm = llm.with_fallbacks([fallback_llm])
                 log.info("Enabled Gemini fallback to Groq for runtime API errors")
             elif fallback_enabled:
+                if "groq" not in llm_block:
+                    log.warning(
+                        "Gemini fallback enabled but Groq config block is missing; continuing with Gemini only"
+                    )
                 log.warning(
                     "Gemini fallback to Groq requested but not configured; continuing with Gemini only"
                 )
