@@ -12,17 +12,35 @@ log = CustomLogger().get_logger(__name__)
 class ModelLoader:
     def __init__(self) -> None:
         load_dotenv()
-        self._validate_env()
         self.config = load_config()
+        provider_key = os.getenv("LLM_PROVIDER","groq")
+        self._validate_env(provider_key=provider_key)
         log.info("Configurations loaded successfully",config_keys = list(self.config.keys()))
 
-    def _validate_env(self):
-        required_varibale = ["GROQ_API_KEY","GOOGLE_API_KEY"]
-        self.api_keys = {key : os.getenv(key) for key in required_varibale}
-        missing = [k for k,v in self.api_keys.items() if not v]
+    def _validate_env(self, provider_key: str = "groq"):
+        required_variable_map = {
+            "groq": ["GROQ_API_KEY"],
+            "google": ["GOOGLE_API_KEY"],
+        }
+        required_variables = required_variable_map.get(provider_key)
+        if required_variables is None:
+            log.error("Unsupported LLM provider in environment", provider_key=provider_key)
+            raise AutoML_Exception(f"Unsupported LLM provider: {provider_key}", sys)
+
+        self.api_keys = {
+            "GROQ_API_KEY": os.getenv("GROQ_API_KEY"),
+            "GOOGLE_API_KEY": os.getenv("GOOGLE_API_KEY"),
+        }
+        missing = [k for k in required_variables if not self.api_keys.get(k)]
         if missing:
-            log.error(f"Missing required environment variables: {missing}",missing_var = missing)
-            raise AutoML_Exception(f"Missing required environment variables: {missing}",sys)
+            log.error(
+                "Missing required environment variables for configured provider",
+                missing_var=missing,
+                provider_key=provider_key,
+            )
+            raise AutoML_Exception(
+                f"Missing required environment variables for {provider_key}: {missing}", sys
+            )
 
         log.info("Environment variables validated successfully", available_keys = list(self.api_keys.keys())) 
 
@@ -49,7 +67,7 @@ class ModelLoader:
         provider = llm_config.get("provider")
         model_name = llm_config.get("model_name")
         temperature = llm_config.get("temperature", 0.2)
-        max_tokens = llm_config.get("max_tokens", 2048)
+        max_tokens = llm_config.get("max_output_tokens", llm_config.get("max_tokens", 2048))
 
         log.info("Loading LLM", provider=provider, model=model_name, temperature=temperature, max_tokens=max_tokens)
 
@@ -59,6 +77,22 @@ class ModelLoader:
                 temperature = temperature,
                 max_output_tokens = max_tokens
             )
+            fallback_enabled = os.getenv("GOOGLE_FALLBACK_TO_GROQ", "true").lower() in {
+                "1", "true", "yes", "on"
+            }
+            if fallback_enabled and self.api_keys.get("GROQ_API_KEY") and "groq" in llm_block:
+                groq_cfg = llm_block["groq"]
+                fallback_llm = ChatGroq(
+                    model=groq_cfg.get("model_name", "llama-3.1-8b-instant"),
+                    api_key=self.api_keys["GROQ_API_KEY"],
+                    temperature=groq_cfg.get("temperature", 0.0),
+                )
+                llm = llm.with_fallbacks([fallback_llm])
+                log.info("Enabled Gemini fallback to Groq for runtime API errors")
+            elif fallback_enabled:
+                log.warning(
+                    "Gemini fallback to Groq requested but not configured; continuing with Gemini only"
+                )
             return llm 
         
         elif provider == "groq":

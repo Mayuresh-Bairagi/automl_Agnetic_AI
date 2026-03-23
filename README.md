@@ -81,6 +81,14 @@ GOOGLE_API_KEY=your_google_key
 LLM_PROVIDER=groq
 ```
 
+If you prefer Gemini, use:
+
+```env
+LLM_PROVIDER=google
+# Optional: keep this true to auto-fallback to Groq on Gemini quota/rate-limit errors
+GOOGLE_FALLBACK_TO_GROQ=true
+```
+
 ### 3) Run the API
 
 ```bash
@@ -119,6 +127,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 - Current repository does not include a formal test suite configuration.
 - Recommended next step: add unit tests for API request/response validation and pipeline components.
+
+## 🛠️ Troubleshooting
+
+- **Gemini returns `429 RESOURCE_EXHAUSTED`**: this indicates Google quota/billing is exhausted or unavailable for your project/model.
+  - Verify Gemini billing/quota in Google AI Studio / GCP.
+  - Set `LLM_PROVIDER=groq` for immediate continuity.
+  - Or keep `LLM_PROVIDER=google` and set `GOOGLE_FALLBACK_TO_GROQ=true` with `GROQ_API_KEY` configured to auto-fallback.
 
 ## 📄 License
 
