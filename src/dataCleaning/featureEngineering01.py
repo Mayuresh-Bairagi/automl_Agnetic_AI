@@ -109,9 +109,24 @@ class FeatureEngineer1:
                     if response.get('remake') == 'yes':
                         self.log.info("Remaking column using generated code", column=col)
                         clean_code = response['code'].replace("import pandas as pd", "").replace("import re", "")
-                        exec_globals = {"pd": pd, "re": re,"np" :np}
-                        exec_locals = {"converted_df": self.converted_df}
+                        exec_globals = {"pd": pd, "re": re, "np": np}
+                        # Expose both 'converted_df' and 'df' so LLM-generated code can use either name
+                        exec_locals = {"converted_df": self.converted_df, "df": self.converted_df}
                         exec(clean_code, exec_globals, exec_locals)
+                        # Sync back: handle both in-place and reassignment cases for either variable name.
+                        # If 'converted_df' was reassigned (new object), use it directly.
+                        # Otherwise, 'converted_df' was only modified in-place (or untouched),
+                        # so check whether 'df' was reassigned by the LLM code instead.
+                        updated_converted = exec_locals.get("converted_df")
+                        if updated_converted is not self.converted_df:
+                            # LLM reassigned 'converted_df' – use the new DataFrame
+                            self.converted_df = updated_converted
+                        else:
+                            df_result = exec_locals.get("df")
+                            if df_result is not None and df_result is not self.converted_df:
+                                # LLM reassigned 'df' – use the new DataFrame
+                                self.converted_df = df_result
+                            # else: in-place modification already reflected in self.converted_df
                         self.converted_df.drop(columns=[col], inplace=True)
                         self.log.debug("Dropped original object column", column=col)
                     else:
