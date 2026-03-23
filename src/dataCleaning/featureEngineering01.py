@@ -109,10 +109,17 @@ class FeatureEngineer1:
                     if response.get('remake') == 'yes':
                         self.log.info("Remaking column using generated code", column=col)
                         clean_code = response['code'].replace("import pandas as pd", "").replace("import re", "")
-                        exec_globals = {"pd": pd, "re": re,"np" :np}
-                        exec_locals = {"converted_df": self.converted_df}
+                        exec_globals = {"pd": pd, "re": re, "np": np}
+                        exec_locals = {"converted_df": self.converted_df, "df": self.converted_df}
                         exec(clean_code, exec_globals, exec_locals)
-                        self.converted_df.drop(columns=[col], inplace=True)
+                        # Sync back when LLM code reassigns df/converted_df (e.g. df = df.assign(...))
+                        # In-place mutations are already reflected via object reference; only a new
+                        # object (identity check) means we must update self.converted_df.
+                        new_df = exec_locals.get("df") or exec_locals.get("converted_df")
+                        if new_df is not None and new_df is not self.converted_df:
+                            self.converted_df = new_df
+                        if col in self.converted_df.columns:
+                            self.converted_df.drop(columns=[col], inplace=True)
                         self.log.debug("Dropped original object column", column=col)
                     else:
                         self.log.info("No remake needed for column", column=col)
