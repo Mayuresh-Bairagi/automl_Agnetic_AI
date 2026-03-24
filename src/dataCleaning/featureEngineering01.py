@@ -9,7 +9,7 @@ from pathlib import Path
 from langchain_core.output_parsers import JsonOutputParser
 from langchain_classic.output_parsers import OutputFixingParser
 from Propmt.propmt_lib import PROMPT_REGISTRY
-from typing import List, Dict, Union, Set
+from typing import Any, List, Dict, Union, Set
 from src.datasetAnalysis.data_type_analysis import DataTypeAnalyzer
 from src.datasetAnalysis.data_ingestion import datasetHandler
 import numpy as np
@@ -61,6 +61,8 @@ class _SafeRegex:
 class FeatureEngineer1:
     def __init__(self, dataset: Union[str, pd.DataFrame]):
         self.log = CustomLogger().get_logger(__name__)
+        self.recommendations: List[Dict] = []
+        self.converted_df: pd.DataFrame = pd.DataFrame()
         try:
             self.log.info("Initializing FeatureEngineer1...")
 
@@ -91,24 +93,26 @@ class FeatureEngineer1:
 
             
             self.analyzer = DataTypeAnalyzer(self.df)
-            self.recommendations = self.analyzer.analyze_data_type()
+            raw_recommendations: Any = self.analyzer.analyze_data_type()
             self.log.info(
                 "Data type analysis completed",
-                recommendations_count=len(self.recommendations) if isinstance(self.recommendations, list) else 0
+                recommendations_count=len(raw_recommendations) if isinstance(raw_recommendations, list) else 0
             )
 
             
-            if isinstance(self.recommendations, dict) and "columns" in self.recommendations:
-                self.recommendations = self.recommendations["columns"]
+            if isinstance(raw_recommendations, dict) and "columns" in raw_recommendations:
+                raw_recommendations = raw_recommendations["columns"]
                 self.log.info("Extracted 'columns' from recommendations dictionary")
-            if not isinstance(self.recommendations, list):
+            if not isinstance(raw_recommendations, list):
                 self.log.warning("Recommendations not in expected list format; defaulting to empty list")
                 self.recommendations = []
+            else:
+                self.recommendations = raw_recommendations
 
             
             self.code_snippet = self.analyzer.generate_conversion_code(self.recommendations)
             self.converted_df = self.analyzer.apply_conversions(self.df, self.recommendations)
-            if self.converted_df is None:
+            if self.converted_df is None or not isinstance(self.converted_df, pd.DataFrame):
                 self.log.warning("Converted dataframe is None; falling back to original dataframe copy")
                 self.converted_df = self.df.copy()
             self.log.info("Applied conversions successfully", dataframe_overview=self.converted_df.head().to_dict())
@@ -153,7 +157,23 @@ class FeatureEngineer1:
         self.log.info("Starting feature generation...")
         col = "unknown"
         try:
+            if not isinstance(self.recommendations, list):
+                self.log.warning("Recommendations unexpectedly not a list; defaulting to empty list")
+                self.recommendations = []
+
+            if self.converted_df is None or not isinstance(self.converted_df, pd.DataFrame):
+                self.log.warning("Converted dataframe missing; rebuilding from original input")
+                self.converted_df = self.df.copy()
+
             for col_info in self.recommendations:
+                if not isinstance(col_info, dict):
+                    self.log.warning("Skipping malformed recommendation entry", entry_type=str(type(col_info)))
+                    continue
+
+                if "column_name" not in col_info or "suggested_dtype" not in col_info:
+                    self.log.warning("Skipping recommendation missing required keys", recommendation=col_info)
+                    continue
+
                 col = col_info["column_name"]
                 self.log.info("Processing column", column=col, suggested_dtype=col_info["suggested_dtype"])
 
@@ -231,6 +251,12 @@ class FeatureEngineer1:
 
                             # Keep dataframe reference updated if generated code reassigns one of the variables.
                             self.converted_df = exec_locals.get("converted_df", exec_locals.get("df", self.converted_df))
+                            if self.converted_df is None or not isinstance(self.converted_df, pd.DataFrame):
+                                self.log.warning(
+                                    "Generated code returned invalid dataframe; restoring previous dataframe",
+                                    column=col,
+                                )
+                                self.converted_df = self.df.copy()
                             self.converted_df.drop(columns=[col], inplace=True, errors="ignore")
                             self.log.debug("Dropped original object column", column=col)
                         else:
@@ -244,17 +270,25 @@ class FeatureEngineer1:
 
             
             self.handler = datasetHandler(session_id=self.session_id)
-            cleaned_df = self.converted_df.dropna().drop_duplicates()
-            if cleaned_df.empty and not self.converted_df.empty:
-                self.log.warning(
-                    "dropna removed all rows; falling back to drop_duplicates only",
-                    original_shape=str(self.converted_df.shape),
-                )
-                cleaned_df = self.converted_df.drop_duplicates()
+            if self.converted_df is None or not isinstance(self.converted_df, pd.DataFrame):
+                self.log.warning("Converted dataframe invalid before save; restoring original dataframe")
+                self.converted_df = self.df.copy()
 
+            missing_pct = (self.converted_df.isnull().mean() * 100).sort_values(ascending=False)
+            top_missing = {
+                str(col): round(float(pct), 2)
+                for col, pct in missing_pct[missing_pct > 0].head(10).items()
+            }
+            if top_missing:
+                self.log.warning(
+                    "Missing values detected after feature engineering; preserving rows for train-only imputation",
+                    top_missing_percent=top_missing,
+                )
+
+            cleaned_df = self.converted_df.drop_duplicates()
             if cleaned_df.empty and not self.converted_df.empty:
                 self.log.warning(
-                    "drop_duplicates still empty unexpectedly; using original converted dataframe",
+                    "drop_duplicates resulted in empty dataframe unexpectedly; using original converted dataframe",
                     original_shape=str(self.converted_df.shape),
                 )
                 cleaned_df = self.converted_df.copy()

@@ -1,26 +1,36 @@
 import os
-from typing import Dict, List, Optional, Tuple
+import sys
+import importlib
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
+from sklearn.impute import SimpleImputer
 from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import KFold, cross_val_score, GridSearchCV, train_test_split
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
 from sklearn.svm import SVR
 
+XGBRegressor = None
+LGBMRegressor = None
+_XGBOOST_AVAILABLE = False
+_LIGHTGBM_AVAILABLE = False
+
 try:
-    from xgboost import XGBRegressor
+    XGBRegressor = importlib.import_module("xgboost").XGBRegressor
     _XGBOOST_AVAILABLE = True
-except ImportError:
+except Exception:
     _XGBOOST_AVAILABLE = False
 
 try:
-    from lightgbm import LGBMRegressor
+    LGBMRegressor = importlib.import_module("lightgbm").LGBMRegressor
     _LIGHTGBM_AVAILABLE = True
-except ImportError:
+except Exception:
     _LIGHTGBM_AVAILABLE = False
 
 from logger.customlogger import CustomLogger
@@ -56,52 +66,50 @@ class AutoMLRegressor:
         self,
         session_id: str,
         problem_statement: str,
-        result: dict = None,
-        df: pd.DataFrame = None,
+        result: Optional[dict] = None,
+        df: Optional[pd.DataFrame] = None,
         test_size: float = 0.2,
         random_state: int = 42,
+        use_llm_feature_selection: bool = True,
     ) -> None:
         self.logger = CustomLogger().get_logger(__file__)
         self.logger.info("Initializing AutoMLRegressor", session_id=session_id)
 
         try:
+            self.session_id = session_id
+            self.problem_statement = problem_statement
+            self.result = result if isinstance(result, dict) else {}
             self.database_path = os.path.join(
                 os.getcwd(), "data", "datasetAnalysis", session_id, "processed_file.csv"
             )
             if not os.path.exists(self.database_path):
                 raise FileNotFoundError(f"Dataset not found at {self.database_path}")
 
-            self.df = pd.read_csv(self.database_path)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                self.df = df.copy()
+            else:
+                self.df = pd.read_csv(self.database_path)
             if self.df.empty:
                 raise ValueError(
                     "Processed dataset is empty after cleaning; cannot train regression models."
                 )
-            self.selector = FeatureSelector(session_id, problem_statement, result, df)
-            self.context = self.selector.llm_response()
 
-            if self.context is None or not isinstance(self.context, dict):
-                self.logger.warning(
-                    "Feature selector context missing or invalid; using fallback",
-                    context_type=str(type(self.context)),
-                )
-                self.context = {
-                    "target_col": result.get("target_variable") if isinstance(result, dict) else None,
-                    "dropped_features": [],
-                }
-
-            self.target_col = self.context.get("target_col") or (result.get("target_variable") if isinstance(result, dict) else None)
+            self.target_col = self.result.get("target_variable")
             if not self.target_col:
-                raise ValueError("Unable to determine target column from feature selector or target detection result")
-            self.dropped_features: List[str] = self.context.get("dropped_features") or []
+                raise ValueError("Unable to determine target column from target detection result")
+            if self.target_col not in self.df.columns:
+                raise ValueError(f"Target column '{self.target_col}' not found in processed dataset")
+
+            self.dropped_features: List[str] = []
             self.test_size = test_size
             self.random_state = random_state
+            self.use_llm_feature_selection = use_llm_feature_selection
             self.output_dir = os.path.join(
                 os.getcwd(), "data", "datasetAnalysis", session_id
             )
             os.makedirs(self.output_dir, exist_ok=True)
 
-            self.label_encoders: Dict[str, LabelEncoder] = {}
-            self.scaler: Optional[MinMaxScaler] = None
+            self.preprocessor: Optional[ColumnTransformer] = None
             self.best_model = None
             self.results_df: Optional[pd.DataFrame] = None
             self.trained_models: Dict = {}
@@ -112,51 +120,51 @@ class AutoMLRegressor:
 
         except Exception as e:
             self.logger.error("Initialization failed", error=str(e))
-            raise AutoML_Exception("Initialization failed", e)
+            raise AutoML_Exception("Initialization failed", cast(Any, sys))
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _safe_label_transform(le: LabelEncoder, value: str) -> int:
-        """Transform a single value using a fitted LabelEncoder.
+    def _fit_preprocessor(self, X_train: pd.DataFrame) -> Tuple[Any, List[str], List[str]]:
+        """Fit preprocessing pipeline on train only (impute + encode + scale)."""
+        categorical_cols = X_train.select_dtypes(include=["object", "category", "string"]).columns.tolist()
+        numeric_cols = X_train.select_dtypes(include=[np.number]).columns.tolist()
 
-        Returns ``-1`` for unseen labels so that test-set inference never
-        crashes on out-of-vocabulary values.
-        """
-        return int(le.transform([value])[0]) if value in le.classes_ else -1
+        numeric_pipeline = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="median")),
+                ("scaler", MinMaxScaler()),
+            ]
+        )
+        categorical_pipeline = Pipeline(
+            steps=[
+                ("imputer", SimpleImputer(strategy="most_frequent")),
+                ("encoder", OneHotEncoder(handle_unknown="ignore")),
+            ]
+        )
 
-    def _encode_features(
-        self, X_train: pd.DataFrame, X_test: pd.DataFrame
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """Label-encode categorical columns; fit only on *X_train*."""
-        for col in X_train.select_dtypes(include=["object", "category"]).columns:
-            le = LabelEncoder()
-            X_train[col] = le.fit_transform(X_train[col].astype(str))
-            X_test[col] = X_test[col].astype(str).map(
-                lambda v, _le=le: self._safe_label_transform(_le, v)
-            )
-            self.label_encoders[col] = le
-        return X_train, X_test
+        self.preprocessor = ColumnTransformer(
+            transformers=[
+                ("num", numeric_pipeline, numeric_cols),
+                ("cat", categorical_pipeline, categorical_cols),
+            ],
+            remainder="drop",
+        )
+        X_train_t = self.preprocessor.fit_transform(X_train)
+        return X_train_t, numeric_cols, categorical_cols
 
-    def _scale_features(
-        self, X_train: pd.DataFrame, X_test: pd.DataFrame
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """MinMax-scale numeric columns; fit only on *X_train*."""
-        numeric_cols = X_train.select_dtypes(include=["int64", "float64"]).columns
-        if len(numeric_cols):
-            self.scaler = MinMaxScaler()
-            X_train[numeric_cols] = self.scaler.fit_transform(X_train[numeric_cols])
-            X_test[numeric_cols] = self.scaler.transform(X_test[numeric_cols])
-        return X_train, X_test
+    def _transform_with_preprocessor(self, X_test: pd.DataFrame) -> Any:
+        if self.preprocessor is None:
+            raise ValueError("Preprocessor is not fitted")
+        return self.preprocessor.transform(X_test)
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
     def preprocess(self) -> Tuple[pd.DataFrame, pd.Series]:
-        """Drop irrelevant features and return X, y ready for splitting.
+        """Build X, y ready for splitting.
 
         Returns
         -------
@@ -168,9 +176,24 @@ class AutoMLRegressor:
         try:
             self.logger.info("Starting preprocessing")
 
-            df_cleaned = self.df.drop(columns=self.dropped_features, errors="ignore")
-            X = df_cleaned.drop(self.target_col, axis=1)
-            y = df_cleaned[self.target_col]
+            before_rows = len(self.df)
+            df_work = self.df.drop_duplicates().copy()
+            removed_duplicates = before_rows - len(df_work)
+            if removed_duplicates > 0:
+                self.logger.warning("Removed duplicate rows before split", removed_duplicates=removed_duplicates)
+
+            df_work = df_work[df_work[self.target_col].notna()].copy()
+            if df_work.empty:
+                raise ValueError("No rows remaining after dropping missing target values")
+
+            X = df_work.drop(self.target_col, axis=1)
+            y = df_work[self.target_col]
+
+            if self.target_col in X.columns:
+                raise ValueError("Target leakage detected: target column present in features")
+
+            if X.empty:
+                raise ValueError("Feature matrix is empty after preprocessing")
 
             self.logger.info(
                 "Preprocessing completed",
@@ -181,7 +204,51 @@ class AutoMLRegressor:
 
         except Exception as e:
             self.logger.error("Preprocessing failed", error=str(e))
-            raise AutoML_Exception("Preprocessing failed", e)
+            raise AutoML_Exception("Preprocessing failed", cast(Any, sys))
+
+    def _resolve_train_only_dropped_features(
+        self, X_train: pd.DataFrame, y_train: pd.Series
+    ) -> List[str]:
+        """Run feature selection strictly on training data to avoid leakage."""
+        if not self.use_llm_feature_selection:
+            self.logger.info("LLM feature selection disabled; using deterministic no-drop fallback")
+            return []
+
+        try:
+            train_df = X_train.copy()
+            train_df[self.target_col] = y_train
+
+            selector = FeatureSelector(
+                self.session_id,
+                self.problem_statement,
+                self.result,
+                train_df,
+            )
+            context = selector.llm_response()
+
+            if not isinstance(context, dict):
+                self.logger.warning(
+                    "Feature selector context invalid after split; using no dropped features",
+                    context_type=str(type(context)),
+                )
+                return []
+
+            dropped = context.get("dropped_features") or []
+            if not isinstance(dropped, list):
+                self.logger.warning(
+                    "Dropped features not a list; ignoring",
+                    dropped_type=str(type(dropped)),
+                )
+                return []
+
+            dropped = [c for c in dropped if c != self.target_col]
+            return dropped
+        except Exception as e:
+            self.logger.warning(
+                "Feature selection failed after split; proceeding without dropped features",
+                error=str(e),
+            )
+            return []
 
     def train_models(
         self, cv: int = 3, skip_heavy: bool = False
@@ -220,16 +287,31 @@ class AutoMLRegressor:
             )
         except Exception as e:
             self.logger.error("Dataset split failed", error=str(e))
-            raise AutoML_Exception("Dataset split failed", e)
+            raise AutoML_Exception("Dataset split failed", cast(Any, sys))
 
-        # Fit encoders / scaler on train only
-        X_train, X_test = self._encode_features(X_train.copy(), X_test.copy())
-        X_train, X_test = self._scale_features(X_train, X_test)
+        # Resolve dropped features on train split only (leakage-safe).
+        self.dropped_features = self._resolve_train_only_dropped_features(X_train, y_train)
+        if self.dropped_features:
+            valid_dropped = [c for c in self.dropped_features if c in X_train.columns]
+            X_train = X_train.drop(columns=valid_dropped, errors="ignore")
+            X_test = X_test.drop(columns=valid_dropped, errors="ignore")
+            self.logger.info("Applied train-only dropped features", dropped_features=valid_dropped)
+
+        # Detect accidental train/test overlap by row fingerprint.
+        train_fingerprints = set(pd.util.hash_pandas_object(X_train, index=False).astype(str).tolist())
+        test_fingerprints = set(pd.util.hash_pandas_object(X_test, index=False).astype(str).tolist())
+        overlap_count = len(train_fingerprints.intersection(test_fingerprints))
+        if overlap_count > 0:
+            self.logger.warning("Potential duplicate leakage across train/test split", overlap_rows=overlap_count)
+
+        # Fit preprocessing pipeline on train only
+        X_train_t, numeric_cols, categorical_cols = self._fit_preprocessor(X_train.copy())
+        X_test_t = self._transform_with_preprocessor(X_test.copy())
 
         # Persist preprocessing artefacts
         self.preprocessing_objects = {
-            "scaler": self.scaler,
-            "label_encoders": self.label_encoders,
+            "preprocessor": self.preprocessor,
+            "dropped_features": self.dropped_features,
         }
         joblib.dump(
             self.preprocessing_objects,
@@ -237,7 +319,8 @@ class AutoMLRegressor:
         )
         self.logger.info(
             "Preprocessing artefacts saved",
-            categorical_features=list(self.label_encoders.keys()),
+            numeric_features=numeric_cols,
+            categorical_features=categorical_cols,
         )
 
         # Model catalogue
@@ -280,7 +363,7 @@ class AutoMLRegressor:
             ),
         }
 
-        if _XGBOOST_AVAILABLE:
+        if _XGBOOST_AVAILABLE and XGBRegressor is not None:
             models["XGBoost"] = (
                 XGBRegressor(
                     random_state=self.random_state,
@@ -295,7 +378,7 @@ class AutoMLRegressor:
                 },
             )
 
-        if _LIGHTGBM_AVAILABLE:
+        if _LIGHTGBM_AVAILABLE and LGBMRegressor is not None:
             models["LightGBM"] = (
                 LGBMRegressor(random_state=self.random_state, verbosity=-1),
                 {
@@ -320,8 +403,8 @@ class AutoMLRegressor:
                 gs = GridSearchCV(
                     model, params, cv=kf, n_jobs=-1, scoring="r2", refit=True
                 )
-                gs.fit(X_train, y_train)
-                y_pred = gs.predict(X_test)
+                gs.fit(X_train_t, y_train)
+                y_pred = gs.predict(X_test_t)
 
                 r2 = r2_score(y_test, y_pred)
                 mae = mean_absolute_error(y_test, y_pred)
@@ -329,7 +412,7 @@ class AutoMLRegressor:
 
                 # Cross-val score on training set
                 cv_scores = cross_val_score(
-                    gs.best_estimator_, X_train, y_train, cv=kf, scoring="r2"
+                    gs.best_estimator_, X_train_t, y_train, cv=kf, scoring="r2"
                 )
 
                 row = {
@@ -365,14 +448,17 @@ class AutoMLRegressor:
                 self.logger.error(f"{name} training failed", error=str(e))
                 continue
 
-        self.results_df = pd.DataFrame(results).sort_values(
+        results_df = pd.DataFrame(results).sort_values(
             by="R2_Score", ascending=False
         ).reset_index(drop=True)
+        if results_df.empty:
+            raise ValueError("No regression models were successfully trained")
+        self.results_df = results_df
         self.logger.info(
             "All models training completed",
             trained_models=list(self.trained_models.keys()),
         )
-        return self.results_df, self.trained_models, self.model_paths
+        return results_df, self.trained_models, self.model_paths
 
 
 if __name__ == "__main__":

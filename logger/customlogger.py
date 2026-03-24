@@ -38,26 +38,27 @@ class CustomLogger:
         """
         logger_name = os.path.basename(name)
 
-        file_handler = logging.FileHandler(self.log_file)
-        file_handler.setLevel(logging.INFO)
-        file_handler.setFormatter(logging.Formatter("%(message)s"))
-
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-        console_handler.setFormatter(logging.Formatter("%(message)s"))
-
         # Avoid adding duplicate handlers on repeated calls
         root_logger = logging.getLogger()
-        if not root_logger.handlers:
-            logging.basicConfig(
-                level=logging.INFO,
-                format="%(message)s",
-                handlers=[file_handler, console_handler],
-            )
-        else:
-            root_logger.setLevel(logging.INFO)
-            if not any(isinstance(h, logging.FileHandler) for h in root_logger.handlers):
-                root_logger.addHandler(file_handler)
+        root_logger.setLevel(logging.INFO)
+
+        has_console = any(isinstance(h, logging.StreamHandler) and not isinstance(h, logging.FileHandler) for h in root_logger.handlers)
+        has_file_for_path = any(
+            isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None) == self.log_file
+            for h in root_logger.handlers
+        )
+
+        if not has_console:
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.INFO)
+            console_handler.setFormatter(logging.Formatter("%(message)s"))
+            root_logger.addHandler(console_handler)
+
+        if not has_file_for_path:
+            file_handler = logging.FileHandler(self.log_file)
+            file_handler.setLevel(logging.INFO)
+            file_handler.setFormatter(logging.Formatter("%(message)s"))
+            root_logger.addHandler(file_handler)
 
         structlog.configure(
             processors=[

@@ -388,3 +388,57 @@ Common status codes:
 - 422: validation error
 - 500: internal server error
 
+---
+
+## 9) Pipeline Quality Fix Log And Baseline Checkpoints
+
+This project includes targeted data-pipeline hardening to reduce leakage and improve stability.
+
+Implemented pipeline fixes:
+
+- Train-only feature selection (no full-dataset selection before split).
+- Train-only preprocessing fit (imputation, encoding, scaling).
+- Replaced feature label encoding with one-hot encoding for categorical features.
+- Removed upload-time global row drop based on missing values.
+- Added duplicate and target-integrity safeguards in preprocessing.
+- Added deterministic baseline runner mode that disables LLM feature selection.
+
+Baseline utility:
+
+- Script: src/evaluation/baseline_runner.py
+- Output artifact per session: data/datasetAnalysis/{session_id}/baseline_metrics.json
+
+Deterministic baseline command examples:
+
+```bash
+python src/evaluation/baseline_runner.py --session-id session_id_20260323_193846_8802caca --target-col RainTomorrow --problem-type classification --cv 2 --max-rows 1500
+python src/evaluation/baseline_runner.py --session-id session_id_20260323_194939_04e09a31 --target-col Price --problem-type regression --cv 2 --max-rows 1500
+```
+
+Current checkpoint snapshots:
+
+- Session: session_id_20260323_193846_8802caca
+	- problem_type: classification
+	- target: RainTomorrow
+	- best_model: LogisticRegression
+	- best_metric: Accuracy = 0.875
+	- balanced_accuracy: 0.772
+
+- Session: session_id_20260323_194939_04e09a31
+	- problem_type: regression
+	- target: Price
+	- best_model: ElasticNet
+	- best_metric: R2_Score = 0.7132
+
+Checkpoint comparison table:
+
+| Session ID | Problem Type | Target | Best Model | Primary Metric | Score | Secondary Metric |
+|---|---|---|---|---|---:|---|
+| session_id_20260323_193846_8802caca | classification | RainTomorrow | LogisticRegression | Accuracy | 0.8750 | Balanced_Accuracy=0.7720 |
+| session_id_20260323_194939_04e09a31 | regression | Price | ElasticNet | R2_Score | 0.7132 | RMSE=2366.9585 |
+
+Notes:
+
+- Baseline runs are intended as reproducible checkpoints for before/after comparisons.
+- Use the same target, session, cv, and max_rows values for fair comparisons.
+
