@@ -11,6 +11,13 @@ import pandas as pd
 from logger.customlogger import CustomLogger
 from expection.customExpection import AutoML_Exception
 
+
+def _safe_sample_values(series: pd.Series, max_items: int = 3):
+    non_null = series.dropna().astype(str)
+    if non_null.empty:
+        return []
+    return non_null.head(max_items).tolist()
+
 class TargetVariable:
     def __init__(self, session_id):
         try:
@@ -31,16 +38,45 @@ class TargetVariable:
         except Exception as e:
             self.log.error('Error initializing Target Variable Handler', error=str(e))
             raise AutoML_Exception("Error initializing Target Variable Handler", e) from e
+
+    def _build_column_profiles(self) -> dict:
+        profiles = {}
+        total_rows = max(1, len(self.df))
+        for col in self.df.columns:
+            series = self.df[col]
+            profiles[str(col)] = {
+                "dtype": str(series.dtype),
+                "non_null_ratio": round(float(series.notna().sum() / total_rows), 4),
+                "unique_count": int(series.nunique(dropna=True)),
+                "sample_values": _safe_sample_values(series),
+            }
+        return profiles
+
+    def _validate_target_response(self, response: dict) -> None:
+        if not isinstance(response, dict):
+            raise ValueError("Target selector returned invalid response type")
+
+        target = response.get("target_variable")
+        problem_type = str(response.get("problem_type", "")).lower()
+        valid_types = {"regression", "classification", "clustering"}
+
+        if target not in self.df.columns:
+            raise ValueError(f"Predicted target '{target}' not found in dataset columns")
+        if problem_type not in valid_types:
+            raise ValueError(f"Invalid problem_type '{problem_type}' returned by target selector")
     
     def get_target_variable(self,Problem_Statement):    
         try:
             column_names = list(self.df.columns)
+            column_profiles = self._build_column_profiles()
             response = self.chain.invoke(
                 {'return_instructions' : self.parser.get_format_instructions(),
                 'problem_statement' : Problem_Statement,
-                'columnnames' : column_names
+                'columnnames' : column_names,
+                'column_profiles': column_profiles,
                 }
             )
+            self._validate_target_response(response)
             self.log.info("Target variable prediction completed")
             return response,self.df
         except Exception as e :

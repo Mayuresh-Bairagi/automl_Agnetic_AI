@@ -86,6 +86,13 @@ class FeatureEngineer1:
             else:
                 raise AutoML_Exception("Input dataset must be a CSV path or pandas DataFrame")
 
+            self.protected_columns = self._identify_protected_columns(self.df)
+            if self.protected_columns:
+                self.log.info(
+                    "Protected columns detected (excluded from mutation)",
+                    protected_columns=sorted(self.protected_columns),
+                )
+
             
             self.handler = datasetHandler()
             self.session_id = self.handler.save_dataset(self.df, "raw_file.csv")
@@ -128,6 +135,44 @@ class FeatureEngineer1:
         # Capture expressions like df['col'] or converted_df["col"] used by generated snippets.
         pattern = r"(?:df|converted_df)\s*\[\s*['\"]([^'\"]+)['\"]\s*\]"
         return set(re.findall(pattern, code))
+
+    @staticmethod
+    def _identify_protected_columns(df: pd.DataFrame) -> Set[str]:
+        """Identify columns that look like prediction targets and should not be mutated pre-target-detection."""
+        protected: Set[str] = set()
+        if df is None or df.empty:
+            return protected
+
+        name_keywords = {
+            "target", "label", "class", "outcome", "y", "price", "sales", "sale",
+            "churn", "default", "fraud", "score", "risk", "rain",
+        }
+        row_count = max(1, len(df))
+
+        for col in df.columns:
+            col_name = str(col).strip().lower()
+            if any(k in col_name for k in name_keywords):
+                protected.add(str(col))
+                continue
+
+            non_null = df[col].dropna()
+            unique_count = int(non_null.nunique()) if len(non_null) else 0
+
+            # Binary/very-low-cardinality columns are often labels.
+            if 1 < unique_count <= 2:
+                protected.add(str(col))
+                continue
+
+            # Short categorical columns with very low cardinality ratio can also be target-like.
+            if (
+                pd.api.types.is_object_dtype(df[col])
+                and unique_count > 0
+                and (unique_count / row_count) <= 0.02
+                and unique_count <= 10
+            ):
+                protected.add(str(col))
+
+        return protected
 
     def _invoke_with_retry(self, chain, payload, max_attempts: int = 5):
         for attempt in range(1, max_attempts + 1):
@@ -176,6 +221,10 @@ class FeatureEngineer1:
 
                 col = col_info["column_name"]
                 self.log.info("Processing column", column=col, suggested_dtype=col_info["suggested_dtype"])
+
+                if col in self.protected_columns:
+                    self.log.info("Skipping protected column during feature engineering", column=col)
+                    continue
 
                 if col not in self.converted_df.columns:
                     self.log.warning("Column not found in dataframe; skipping", column=col)

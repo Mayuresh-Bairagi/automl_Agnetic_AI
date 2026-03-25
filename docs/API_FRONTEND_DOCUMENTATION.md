@@ -442,3 +442,42 @@ Notes:
 - Baseline runs are intended as reproducible checkpoints for before/after comparisons.
 - Use the same target, session, cv, and max_rows values for fair comparisons.
 
+Issue-closure matrix (strict mapping):
+
+| Category | Status | Implemented Fix | Evidence |
+|---|---|---|---|
+| Data leakage: pre-split feature selection | Closed | Feature selection moved to train-only path after split; applied to both train/test | [src/Classifier/MLClassifier.py](src/Classifier/MLClassifier.py), [src/Regression/regression.py](src/Regression/regression.py), [tests/test_pipeline_integrity.py](tests/test_pipeline_integrity.py) |
+| Missing values handling | Closed | Removed global upload-time row drop; moved to train-time imputation in preprocessing pipeline | [src/dataCleaning/featureEngineering01.py](src/dataCleaning/featureEngineering01.py), [src/Classifier/MLClassifier.py](src/Classifier/MLClassifier.py), [src/Regression/regression.py](src/Regression/regression.py) |
+| Duplicate leakage risk | Closed | Added duplicate removal pre-split and train/test fingerprint overlap detection warning | [src/Classifier/MLClassifier.py](src/Classifier/MLClassifier.py), [src/Regression/regression.py](src/Regression/regression.py), [tests/test_pipeline_integrity.py](tests/test_pipeline_integrity.py) |
+| Categorical encoding mismatch | Closed | Replaced feature label encoding with OneHotEncoder(handle_unknown='ignore') via ColumnTransformer | [src/Classifier/MLClassifier.py](src/Classifier/MLClassifier.py), [src/Regression/regression.py](src/Regression/regression.py), [tests/test_pipeline_integrity.py](tests/test_pipeline_integrity.py) |
+| Class imbalance under-reporting | Closed | Added Balanced_Accuracy metric and class_weight tuning options for major classifiers | [src/Classifier/MLClassifier.py](src/Classifier/MLClassifier.py), [data/datasetAnalysis/session_id_20260323_193846_8802caca/baseline_metrics.json](data/datasetAnalysis/session_id_20260323_193846_8802caca/baseline_metrics.json) |
+| Data integrity: target/features alignment | Closed | Added guards for missing target rows, target-in-features leak checks, and empty-feature matrix checks | [src/Classifier/MLClassifier.py](src/Classifier/MLClassifier.py), [src/Regression/regression.py](src/Regression/regression.py) |
+| String-label target encoding bug | Closed | Fixed classifier to encode any non-numeric target dtype (object/category/string) | [src/Classifier/MLClassifier.py](src/Classifier/MLClassifier.py), [tests/test_pipeline_integrity.py](tests/test_pipeline_integrity.py) |
+| Baseline reproducibility and LLM rate-limit fragility | Closed | Added deterministic baseline mode (no LLM feature selection), explicit target support, cv/max_rows controls | [src/evaluation/baseline_runner.py](src/evaluation/baseline_runner.py), [data/datasetAnalysis/session_id_20260323_193846_8802caca/baseline_metrics.json](data/datasetAnalysis/session_id_20260323_193846_8802caca/baseline_metrics.json), [data/datasetAnalysis/session_id_20260323_194939_04e09a31/baseline_metrics.json](data/datasetAnalysis/session_id_20260323_194939_04e09a31/baseline_metrics.json) |
+
+Open residual risks:
+
+- Model quality still depends on target selection quality when users do not provide explicit target_col/problem_type.
+- Baseline metrics are sampled when max_rows is set; for final offline validation use full data with max_rows=0.
+
+Reproducibility commands:
+
+Quick checkpoint runs (fast, sampled):
+
+```bash
+python src/evaluation/baseline_runner.py --session-id session_id_20260323_193846_8802caca --target-col RainTomorrow --problem-type classification --cv 2 --max-rows 1200
+python src/evaluation/baseline_runner.py --session-id session_id_20260323_194939_04e09a31 --target-col Price --problem-type regression --cv 2 --max-rows 1500
+```
+
+Full-data validation runs (slower, production-style checkpoint):
+
+```bash
+python src/evaluation/baseline_runner.py --session-id session_id_20260323_193846_8802caca --target-col RainTomorrow --problem-type classification --cv 3 --max-rows 0
+python src/evaluation/baseline_runner.py --session-id session_id_20260323_194939_04e09a31 --target-col Price --problem-type regression --cv 3 --max-rows 0
+```
+
+Expected output artifacts:
+
+- data/datasetAnalysis/session_id_20260323_193846_8802caca/baseline_metrics.json
+- data/datasetAnalysis/session_id_20260323_194939_04e09a31/baseline_metrics.json
+

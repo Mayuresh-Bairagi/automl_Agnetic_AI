@@ -250,6 +250,33 @@ class AutoMLRegressor:
             )
             return []
 
+    @staticmethod
+    def _resolve_train_only_pruned_features(X_train: pd.DataFrame) -> Dict[str, List[str]]:
+        """Identify noisy features using train split only to avoid leakage."""
+        if X_train is None or X_train.empty:
+            return {"high_missing": [], "constant": [], "high_cardinality": []}
+
+        row_count = max(1, len(X_train))
+        high_missing = [
+            c for c in X_train.columns
+            if float(X_train[c].isna().mean()) > 0.6
+        ]
+        constant = [
+            c for c in X_train.columns
+            if int(X_train[c].nunique(dropna=False)) <= 1
+        ]
+        high_cardinality = []
+        for c in X_train.select_dtypes(include=["object", "category", "string"]).columns:
+            unique_count = int(X_train[c].nunique(dropna=True))
+            if unique_count > 100 and (unique_count / row_count) > 0.5:
+                high_cardinality.append(c)
+
+        return {
+            "high_missing": sorted(set(high_missing)),
+            "constant": sorted(set(constant)),
+            "high_cardinality": sorted(set(high_cardinality)),
+        }
+
     def train_models(
         self, cv: int = 3, skip_heavy: bool = False
     ) -> Tuple[pd.DataFrame, Dict, Dict[str, str]]:
@@ -297,12 +324,35 @@ class AutoMLRegressor:
             X_test = X_test.drop(columns=valid_dropped, errors="ignore")
             self.logger.info("Applied train-only dropped features", dropped_features=valid_dropped)
 
+        # Train-only pruning for noisy columns.
+        pruned_map = self._resolve_train_only_pruned_features(X_train)
+        prune_candidates = sorted(
+            set(pruned_map["high_missing"]) | set(pruned_map["constant"]) | set(pruned_map["high_cardinality"])
+        )
+        if prune_candidates:
+            X_train = X_train.drop(columns=prune_candidates, errors="ignore")
+            X_test = X_test.drop(columns=prune_candidates, errors="ignore")
+            self.logger.info("Applied train-only noisy-feature pruning", pruned_features=pruned_map)
+
+        if X_train.shape[1] == 0:
+            raise ValueError("All features were pruned/dropped; cannot train model")
+
         # Detect accidental train/test overlap by row fingerprint.
-        train_fingerprints = set(pd.util.hash_pandas_object(X_train, index=False).astype(str).tolist())
-        test_fingerprints = set(pd.util.hash_pandas_object(X_test, index=False).astype(str).tolist())
-        overlap_count = len(train_fingerprints.intersection(test_fingerprints))
+        train_hash = pd.util.hash_pandas_object(X_train, index=False).astype(str)
+        test_hash = pd.util.hash_pandas_object(X_test, index=False).astype(str)
+        train_fingerprints = set(train_hash.tolist())
+        overlap_mask = test_hash.isin(train_fingerprints)
+        overlap_count = int(overlap_mask.sum())
         if overlap_count > 0:
-            self.logger.warning("Potential duplicate leakage across train/test split", overlap_rows=overlap_count)
+            self.logger.warning(
+                "Potential duplicate leakage across train/test split; removing overlaps from test set",
+                overlap_rows=overlap_count,
+            )
+            keep_mask = ~overlap_mask
+            X_test = X_test.loc[keep_mask].copy()
+            y_test = y_test.loc[keep_mask].copy() if hasattr(y_test, "loc") else np.asarray(y_test)[keep_mask.to_numpy()]
+            if len(X_test) == 0:
+                raise ValueError("All test rows overlapped with training rows after dedupe enforcement")
 
         # Fit preprocessing pipeline on train only
         X_train_t, numeric_cols, categorical_cols = self._fit_preprocessor(X_train.copy())
@@ -312,6 +362,7 @@ class AutoMLRegressor:
         self.preprocessing_objects = {
             "preprocessor": self.preprocessor,
             "dropped_features": self.dropped_features,
+            "pruned_features": pruned_map,
         }
         joblib.dump(
             self.preprocessing_objects,

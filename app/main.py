@@ -169,6 +169,33 @@ async def ml_model(request: request_ml_models):
         result, df = target_var_handler.get_target_variable(problem_statement)
 
         problem_statement_type = result["problem_type"]
+        target_col = result.get("target_variable")
+
+        if target_col not in df.columns:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Target column '{target_col}' is not present in processed dataset.",
+            )
+
+        if problem_statement_type.lower() == "classification":
+            class_count = int(df[target_col].nunique(dropna=True))
+            if class_count < 2:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Classification target '{target_col}' has fewer than 2 classes.",
+                )
+
+        if problem_statement_type.lower() == "regression":
+            numeric_target = pd.to_numeric(df[target_col], errors="coerce")
+            valid_ratio = float(numeric_target.notna().mean()) if len(numeric_target) else 0.0
+            if valid_ratio < 0.8:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Regression target '{target_col}' is not sufficiently numeric "
+                        f"(valid ratio={valid_ratio:.2f})."
+                    ),
+                )
 
         if problem_statement_type.lower() == "regression":
             automl_regressor = AutoMLRegressor(

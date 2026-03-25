@@ -70,6 +70,7 @@ target_variable_prompt = ChatPromptTemplate.from_template("""
 You are an AI assistant specialized in data analysis. Your task is to identify the most appropriate target variable in a dataset and recommend its problem type.
    Problem Statement: {problem_statement}
    Dataset Schema (Column Names): {columnnames}
+   Column Profiles (dtype, non-null ratio, cardinality, sample values): {column_profiles}
 Instructions:
    1. Carefully analyze all columns and the problem statement to identify the most suitable target variable.
    2. If multiple columns could be targets, select the one most aligned with the problem objective.
@@ -82,6 +83,8 @@ Instructions:
       {return_instructions}
 Additional Rules:
    - Always pick exactly one column as the target.
+   - Prefer columns that are semantically aligned with prediction intent and have stable non-null coverage.
+   - Use column profiles to avoid choosing IDs, timestamps, or engineered helper columns as targets.
    - If the dataset does not have a clear target, set "problem_type": "clustering" and explain why.
    - Do not include any text outside the schema.
 """)

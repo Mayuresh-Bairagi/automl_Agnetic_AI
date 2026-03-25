@@ -263,6 +263,33 @@ class AutoMLClassifier:
             )
             return []
 
+    @staticmethod
+    def _resolve_train_only_pruned_features(X_train: pd.DataFrame) -> Dict[str, List[str]]:
+        """Identify noisy features using train split only to avoid leakage."""
+        if X_train is None or X_train.empty:
+            return {"high_missing": [], "constant": [], "high_cardinality": []}
+
+        row_count = max(1, len(X_train))
+        high_missing = [
+            c for c in X_train.columns
+            if float(X_train[c].isna().mean()) > 0.6
+        ]
+        constant = [
+            c for c in X_train.columns
+            if int(X_train[c].nunique(dropna=False)) <= 1
+        ]
+        high_cardinality = []
+        for c in X_train.select_dtypes(include=["object", "category", "string"]).columns:
+            unique_count = int(X_train[c].nunique(dropna=True))
+            if unique_count > 100 and (unique_count / row_count) > 0.5:
+                high_cardinality.append(c)
+
+        return {
+            "high_missing": sorted(set(high_missing)),
+            "constant": sorted(set(constant)),
+            "high_cardinality": sorted(set(high_cardinality)),
+        }
+
     def train_models(
         self, cv: int = 3, skip_heavy: bool = False
     ) -> Tuple[pd.DataFrame, Dict, Dict[str, str]]:
@@ -311,12 +338,35 @@ class AutoMLClassifier:
             X_test = X_test.drop(columns=valid_dropped, errors="ignore")
             self.logger.info("Applied train-only dropped features", dropped_features=valid_dropped)
 
+        # Train-only pruning for noisy columns.
+        pruned_map = self._resolve_train_only_pruned_features(X_train)
+        prune_candidates = sorted(
+            set(pruned_map["high_missing"]) | set(pruned_map["constant"]) | set(pruned_map["high_cardinality"])
+        )
+        if prune_candidates:
+            X_train = X_train.drop(columns=prune_candidates, errors="ignore")
+            X_test = X_test.drop(columns=prune_candidates, errors="ignore")
+            self.logger.info("Applied train-only noisy-feature pruning", pruned_features=pruned_map)
+
+        if X_train.shape[1] == 0:
+            raise ValueError("All features were pruned/dropped; cannot train model")
+
         # Detect accidental train/test overlap by row fingerprint.
-        train_fingerprints = set(pd.util.hash_pandas_object(X_train, index=False).astype(str).tolist())
-        test_fingerprints = set(pd.util.hash_pandas_object(X_test, index=False).astype(str).tolist())
-        overlap_count = len(train_fingerprints.intersection(test_fingerprints))
+        train_hash = pd.util.hash_pandas_object(X_train, index=False).astype(str)
+        test_hash = pd.util.hash_pandas_object(X_test, index=False).astype(str)
+        train_fingerprints = set(train_hash.tolist())
+        overlap_mask = test_hash.isin(train_fingerprints)
+        overlap_count = int(overlap_mask.sum())
         if overlap_count > 0:
-            self.logger.warning("Potential duplicate leakage across train/test split", overlap_rows=overlap_count)
+            self.logger.warning(
+                "Potential duplicate leakage across train/test split; removing overlaps from test set",
+                overlap_rows=overlap_count,
+            )
+            keep_mask = ~overlap_mask
+            X_test = X_test.loc[keep_mask].copy()
+            y_test = np.asarray(y_test)[keep_mask.to_numpy()]
+            if len(X_test) == 0:
+                raise ValueError("All test rows overlapped with training rows after dedupe enforcement")
 
         # ---- Fit preprocessing pipeline on train only ----
         X_train_t, numeric_cols, categorical_cols = self._fit_preprocessor(X_train.copy())
@@ -327,6 +377,7 @@ class AutoMLClassifier:
             "preprocessor": self.preprocessor,
             "target_encoder": self.target_encoder,
             "dropped_features": self.dropped_features,
+            "pruned_features": pruned_map,
         }
         joblib.dump(
             self.preprocessing_objects,
@@ -422,14 +473,14 @@ class AutoMLClassifier:
         roc_multi_class = "ovr"
 
         results = []
-        best_accuracy = -float("inf")
+        best_balanced_accuracy = -float("inf")
         skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=self.random_state)
 
         for name, (model, params) in models.items():
             try:
                 self.logger.info(f"Training {name}")
                 gs = GridSearchCV(
-                    model, params, cv=skf, n_jobs=-1, scoring="accuracy", refit=True
+                    model, params, cv=skf, n_jobs=-1, scoring="balanced_accuracy", refit=True
                 )
                 gs.fit(X_train_t, y_train)
                 y_pred = gs.predict(X_test_t)
@@ -464,7 +515,7 @@ class AutoMLClassifier:
 
                 # Cross-val score on training set for an unbiased variance estimate
                 cv_scores = cross_val_score(
-                    gs.best_estimator_, X_train_t, y_train, cv=skf, scoring="accuracy"
+                    gs.best_estimator_, X_train_t, y_train, cv=skf, scoring="balanced_accuracy"
                 )
 
                 row = {
@@ -475,8 +526,8 @@ class AutoMLClassifier:
                     "Precision": round(precision, 4),
                     "Recall": round(recall, 4),
                     "ROC_AUC": round(roc_auc, 4) if roc_auc is not None else None,
-                    "CV_Accuracy_Mean": round(cv_scores.mean(), 4),
-                    "CV_Accuracy_Std": round(cv_scores.std(), 4),
+                    "CV_Balanced_Accuracy_Mean": round(cv_scores.mean(), 4),
+                    "CV_Balanced_Accuracy_Std": round(cv_scores.std(), 4),
                     "Best_Params": gs.best_params_,
                 }
                 results.append(row)
@@ -486,8 +537,8 @@ class AutoMLClassifier:
                 self.trained_models[name] = gs.best_estimator_
                 self.model_paths[name] = model_path
 
-                if acc > best_accuracy:
-                    best_accuracy = acc
+                if balanced_acc > best_balanced_accuracy:
+                    best_balanced_accuracy = balanced_acc
                     self.best_model = gs.best_estimator_
 
                 self.logger.info(
@@ -497,7 +548,7 @@ class AutoMLClassifier:
                     Precision=precision,
                     Recall=recall,
                     ROC_AUC=roc_auc,
-                    CV_Mean=cv_scores.mean(),
+                    CV_Balanced_Mean=cv_scores.mean(),
                     model_path=model_path,
                 )
 
@@ -506,7 +557,7 @@ class AutoMLClassifier:
                 continue
 
         self.results_df = pd.DataFrame(results).sort_values(
-            by="Accuracy", ascending=False
+            by=["Balanced_Accuracy", "Accuracy"], ascending=[False, False]
         ).reset_index(drop=True)
         self.logger.info(
             "All models training completed",
