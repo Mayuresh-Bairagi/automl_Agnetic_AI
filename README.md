@@ -1,5 +1,29 @@
+<div align="center">
+
 # AutoML Agnetic AI
+
 FastAPI-based AutoML platform for tabular data with automated preprocessing, model training, EDA, and agent-driven analytics.
+
+![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge)
+![ML](https://img.shields.io/badge/ML-Scikit--learn-orange?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-Active-success?style=for-the-badge)
+
+</div>
+
+---
+
+> [!TIP]
+> Minimal GitHub-native styling is used so this README looks clean in both dark and light themes.
+
+## Highlights
+
+| Area | Value |
+|---|---|
+| API | FastAPI endpoints for upload, EDA, training, agent run, Q&A, dashboard |
+| ML | Classification + regression with model comparison and tuning |
+| Data Ops | Session-based artifact tracking and reproducible baseline runner |
+| Reliability | Leakage-aware preprocessing and validation guards |
 
 ## Problem Statement
 - Building reliable ML pipelines from raw business data is slow and error-prone.
@@ -13,33 +37,33 @@ FastAPI-based AutoML platform for tabular data with automated preprocessing, mod
 ## Workflow Diagram
 ```mermaid
 graph TD
-        A[Dataset Upload] --> B[Validation & Session Creation]
-        B --> C[Feature Engineering]
-        C --> D[Target Detection]
-        D --> E[Train/Test Split]
-        E --> F[Model Training + Tuning]
-        F --> G[Evaluation + Artifacts]
-        G --> H[API Output / Reports]
+    A["Dataset Upload"] --> B["Validation and Session Creation"]
+    B --> C["Feature Engineering"]
+    C --> D["Target Detection"]
+    D --> E["Train Test Split"]
+    E --> F["Model Training and Tuning"]
+    F --> G["Evaluation and Artifacts"]
+    G --> H["API Output and Reports"]
 ```
 
 ## System Architecture Diagram
 ```mermaid
 graph LR
-        U[Client / UI] --> API[FastAPI Service]
-        API --> UP[/upload]
-        API --> EDA[/eda]
-        API --> ML[/ml-models]
-        API --> AG[/agent/run]
-        API --> QA[/chat]
-        API --> DB[/dashboard/charts]
-        API --> SH[/session history]
-        UP --> ST[(Session Artifacts)]
-        EDA --> ST
-        ML --> ST
-        AG --> ST
-        QA --> ST
-        DB --> ST
-        SH --> ST
+    U["Client or UI"] --> API["FastAPI Service"]
+    API --> UP["POST /upload"]
+    API --> EDA["POST /eda"]
+    API --> ML["POST /ml-models"]
+    API --> AG["POST /agent/run"]
+    API --> QA["POST /chat"]
+    API --> DB["POST /dashboard/charts"]
+    API --> SH["GET /session/{session_id}/history"]
+    UP --> ST["Session Artifacts"]
+    EDA --> ST
+    ML --> ST
+    AG --> ST
+    QA --> ST
+    DB --> ST
+    SH --> ST
 ```
 
 ## Features
@@ -99,6 +123,18 @@ Core API flow:
 2. POST /eda (optional)
 3. POST /ml-models
 4. GET /session/{session_id}/history
+
+Primary endpoints:
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| /upload | POST | Ingest dataset and create session artifacts |
+| /eda | POST | Generate EDA HTML report |
+| /ml-models | POST | Train and evaluate ML models |
+| /agent/run | POST | Execute end-to-end AutoML agent |
+| /chat | POST | Natural-language Q&A on dataset |
+| /dashboard/charts | POST | Generate chart payloads |
+| /session/{session_id}/history | GET | Return session artifact history |
 
 Optional reproducible baseline run:
 
