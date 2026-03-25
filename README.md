@@ -1,102 +1,147 @@
-<div align="center">
+<p align="center">
+    <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0F2027,50:203A43,100:2C5364&height=170&section=header&text=AutoML%20Agnetic%20AI&fontSize=38&fontColor=ffffff&animation=fadeIn" alt="AutoML Agnetic AI Banner" />
+</p>
 
-# AutoML Agnetic AI
+<p align="center">
+    <img src="https://readme-typing-svg.herokuapp.com?font=Segoe+UI&weight=600&size=18&pause=1100&color=2E9AF0&center=true&vCenter=true&width=900&lines=From+raw+tabular+data+to+reproducible+ML+artifacts;Leakage-aware+training+pipeline+for+classification+and+regression;FastAPI+%2B+LangGraph+workflow+for+production-style+AutoML" alt="Typing showcase" />
+</p>
 
-FastAPI-based AutoML platform for tabular data with automated preprocessing, model training, EDA, and agent-driven analytics.
+<p align="center">
+    <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python" />
+    <img src="https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge&logo=fastapi&logoColor=white" alt="FastAPI" />
+    <img src="https://img.shields.io/badge/scikit--learn-Modeling-F7931E?style=for-the-badge&logo=scikitlearn&logoColor=white" alt="scikit-learn" />
+    <img src="https://img.shields.io/badge/LangGraph-Orchestration-4A154B?style=for-the-badge" alt="LangGraph" />
+    <img src="https://img.shields.io/badge/Status-Production%20Focused-2EA043?style=for-the-badge" alt="Status" />
+</p>
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-blue?style=for-the-badge)
-![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?style=for-the-badge)
-![ML](https://img.shields.io/badge/ML-Scikit--learn-orange?style=for-the-badge)
-![Status](https://img.shields.io/badge/Status-Active-success?style=for-the-badge)
+Most ML projects fail before modeling starts.
+Not because algorithms are weak, but because data pipelines are inconsistent, target detection is brittle, and evaluation leaks trust.
 
-</div>
+This repository is built to close that gap: an API-first AutoML system that takes raw tabular data to reproducible model artifacts with guardrails at every critical stage.
+
+<table>
+    <tr>
+        <td><strong>Ingestion</strong><br/>CSV/XLSX/XLS upload with session tracking</td>
+        <td><strong>Intelligence</strong><br/>Target detection and train-only preprocessing guards</td>
+        <td><strong>Delivery</strong><br/>Model artifacts, metrics, and API-first output</td>
+    </tr>
+</table>
 
 ---
 
-> [!TIP]
-> Minimal GitHub-native styling is used so this README looks clean in both dark and light themes.
+## Why This Project Exists
 
-## Highlights
+Teams often face the same friction:
 
-| Area | Value |
-|---|---|
-| API | FastAPI endpoints for upload, EDA, training, agent run, Q&A, dashboard |
-| ML | Classification + regression with model comparison and tuning |
-| Data Ops | Session-based artifact tracking and reproducible baseline runner |
-| Reliability | Leakage-aware preprocessing and validation guards |
+- dataset ingestion changes from file to file,
+- preprocessing logic is not reusable,
+- model comparison is hard to reproduce,
+- output artifacts are scattered and difficult to audit.
 
-## Problem Statement
-- Building reliable ML pipelines from raw business data is slow and error-prone.
-- Teams need a reusable system that can ingest datasets, clean and engineer features, train models, and serve interpretable outputs quickly.
+The result is slow iteration and low confidence in model quality.
+
+---
+
+## Problem -> Friction -> Solution -> Impact
+
+| Stage | Reality | What This Project Does | Impact |
+|---|---|---|---|
+| Problem | Manual, inconsistent tabular ML workflows | API-driven standardized pipeline | Faster setup and cleaner handoffs |
+| Friction | Hidden leakage and weak validation | Train-only preprocessing + target checks + overlap guards | More reliable evaluation |
+| Solution | Need one backend for data, models, and artifacts | FastAPI + session artifacts + AutoML training + agent flow | End-to-end automation with traceability |
+| Impact | Hard to scale experimentation | Reproducible baseline runner and model serialization | Repeatable benchmarking and deployment readiness |
+
+---
 
 ## Solution Overview
-- This project provides an end-to-end AutoML backend with session-based artifact tracking.
-- It combines rule-based preprocessing with LLM-assisted target understanding, then trains multiple ML models for classification or regression.
-- It exposes everything through API endpoints for upload, EDA, model training, Q&A, dashboard generation, and pipeline orchestration.
+
+AutoML Agnetic AI is a backend platform that:
+
+- ingests CSV/Excel datasets,
+- performs feature engineering and data transformation,
+- detects target/problem type,
+- trains and tunes multiple ML models,
+- exposes EDA, Q&A, and dashboard generation through APIs,
+- stores all outputs in session-scoped artifacts.
+
+---
 
 ## Workflow Diagram
+
 ```mermaid
 graph TD
-    A["Dataset Upload"] --> B["Validation and Session Creation"]
+    A["Dataset Upload"] --> B["Validation"]
     B --> C["Feature Engineering"]
-    C --> D["Target Detection"]
+    C --> D["Target and Task Detection"]
     D --> E["Train Test Split"]
-    E --> F["Model Training and Tuning"]
-    F --> G["Evaluation and Artifacts"]
-    G --> H["API Output and Reports"]
+    E --> F["Train Only Preprocessing and Pruning"]
+    F --> G["Model Training and Tuning"]
+    G --> H["Evaluation and Artifact Save"]
+    H --> I["API Response and Session History"]
 ```
 
-## System Architecture Diagram
-```mermaid
-graph LR
-    U["Client or UI"] --> API["FastAPI Service"]
-    API --> UP["POST /upload"]
-    API --> EDA["POST /eda"]
-    API --> ML["POST /ml-models"]
-    API --> AG["POST /agent/run"]
-    API --> QA["POST /chat"]
-    API --> DB["POST /dashboard/charts"]
-    API --> SH["GET /session/{session_id}/history"]
-    UP --> ST["Session Artifacts"]
-    EDA --> ST
-    ML --> ST
-    AG --> ST
-    QA --> ST
-    DB --> ST
-    SH --> ST
-```
+---
+
+## What Makes This Different
+
+- Leakage-aware design in training path (train-only transformations and pruning).
+- Session-based artifact tracking for reproducibility.
+- Unified API surface for upload, EDA, training, Q&A, and dashboards.
+- Works for both classification and regression with shared operational flow.
+- Baseline runner to benchmark pipeline behavior consistently.
+
+---
 
 ## Features
-- Multi-format dataset ingestion: CSV, XLSX, XLS.
-- Automated feature engineering and preprocessing artifact persistence.
-- Model training for both classification and regression tasks.
-- Hyperparameter tuning and comparative model scoring.
-- EDA report generation and interactive chart payload generation.
-- LangGraph-based agent pipeline for end-to-end automation.
-- Natural-language dataset Q&A with generated pandas logic.
-- Session-level history endpoint for traceability.
 
-## Tech Stack
-- Backend: FastAPI, Uvicorn
-- ML: scikit-learn, XGBoost, LightGBM, CatBoost
-- Data: pandas, NumPy
-- LLM/Agent: LangChain, LangGraph, Groq, Google GenAI
-- Visualization: ydata-profiling, Plotly, Matplotlib, Seaborn
-- Utilities: joblib, python-dotenv, structlog
+- Multi-format ingestion: CSV, XLSX, XLS.
+- Automated feature engineering.
+- EDA report generation.
+- AutoML model training with hyperparameter search.
+- LangGraph-driven end-to-end agent execution.
+- Natural-language dataset Q&A.
+- Interactive dashboard chart payload generation.
+- Session history endpoint for artifact audit.
+
+---
+
+## Under the Hood
+
+| Layer | Implementation |
+|---|---|
+| API | FastAPI, Uvicorn |
+| Data | pandas, NumPy |
+| ML | scikit-learn, XGBoost, LightGBM, CatBoost |
+| Agent/LLM | LangChain, LangGraph, Groq, Google GenAI |
+| Visualization | ydata-profiling, Plotly, Matplotlib, Seaborn |
+| Artifacts | joblib, session folder structure |
+
+Model families used:
+
+- Classification: Logistic Regression, Decision Tree, KNN, optional heavier ensembles.
+- Regression: Linear Regression, Ridge, Lasso, ElasticNet, optional heavier ensembles.
+
+Why this mix:
+
+- strong linear baselines for interpretability,
+- non-linear capacity when needed,
+- robust comparison via tuned search and evaluation metrics.
+
+---
 
 ## Project Workflow (Step-by-step)
-1. Data ingestion via API upload endpoint.
-2. Dataset validation (size, format, schema constraints).
-3. Feature engineering and processed dataset generation.
-4. Target variable detection and problem-type selection.
-5. Leakage-safe split and preprocessing fit on training data.
-6. Multi-model training with hyperparameter search.
-7. Evaluation, ranking, model serialization, and response output.
+
+1. Upload dataset via API.
+2. Validate file type, size, and minimum schema.
+3. Generate engineered dataset and session artifacts.
+4. Detect target and task type.
+5. Build train/test split and apply train-only preprocessing.
+6. Tune and train candidate models.
+7. Return ranked metrics and persist model artifacts.
+
+---
 
 ## Installation
-1. Clone repository.
-2. Install dependencies.
-3. Configure environment variables.
 
 ```bash
 git clone https://github.com/Mayuresh-Bairagi/automl_Agnetic_AI.git
@@ -104,69 +149,93 @@ cd automl_Agnetic_AI
 pip install -r requirements.txt
 ```
 
-Create a .env file:
+Create `.env`:
+
 ```env
 GROQ_API_KEY=your_groq_key
 GOOGLE_API_KEY=your_google_key
 LLM_PROVIDER=groq
 ```
 
+---
+
 ## Usage
-Run API server:
+
+Run the API:
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-Core API flow:
-1. POST /upload
-2. POST /eda (optional)
-3. POST /ml-models
-4. GET /session/{session_id}/history
+Recommended endpoint order:
 
-Primary endpoints:
+1. `POST /upload`
+2. `POST /eda` (optional)
+3. `POST /ml-models`
+4. `GET /session/{session_id}/history`
+
+Core endpoint map:
 
 | Endpoint | Method | Purpose |
 |---|---|---|
-| /upload | POST | Ingest dataset and create session artifacts |
-| /eda | POST | Generate EDA HTML report |
-| /ml-models | POST | Train and evaluate ML models |
-| /agent/run | POST | Execute end-to-end AutoML agent |
-| /chat | POST | Natural-language Q&A on dataset |
-| /dashboard/charts | POST | Generate chart payloads |
-| /session/{session_id}/history | GET | Return session artifact history |
+| `/upload` | POST | Ingest dataset and create session artifacts |
+| `/eda` | POST | Generate EDA report |
+| `/ml-models` | POST | Train and evaluate models |
+| `/agent/run` | POST | Execute full agent pipeline |
+| `/chat` | POST | Q&A over dataset |
+| `/dashboard/charts` | POST | Build chart payloads |
+| `/session/{session_id}/history` | GET | Retrieve artifact timeline |
 
-Optional reproducible baseline run:
+Reproducible baseline benchmarking:
 
 ```bash
 python src/evaluation/baseline_runner.py --session-id <session_id> --target-col <target> --problem-type classification --cv 2 --max-rows 3000
 python src/evaluation/baseline_runner.py --session-id <session_id> --target-col <target> --problem-type regression --cv 2 --max-rows 3000
 ```
 
-## Model Details
-- Classification models: Logistic Regression, Decision Tree, KNN, and optional heavier ensemble models.
-- Regression models: Linear Regression, Ridge, Lasso, ElasticNet, and optional heavier ensemble models.
-- Selection rationale:
-    - Mix of interpretable linear baselines and non-linear learners.
-    - Hyperparameter tuning improves generalization.
-    - Balanced-accuracy aware scoring for class-imbalance robustness.
+---
 
 ## Results / Output
-- Outputs include:
-    - Ranked model metrics table
-    - Serialized model files (.joblib)
-    - Preprocessing artifact (.joblib)
-    - Session-level metadata and history
-- Typical evaluation metrics:
-    - Classification: Accuracy, Balanced Accuracy, F1, Precision, Recall, ROC-AUC
-    - Regression: R2, MAE, RMSE
 
-## Future Improvements
-- Add CI/CD with automated benchmark gates.
-- Expand drift monitoring and data-quality alerts.
-- Add richer model explainability reports.
-- Add Docker and deployment templates.
-- Add broader unit and integration test coverage.
+Each run can produce:
+
+- ranked per-model metrics,
+- serialized model files (`.joblib`),
+- preprocessing artifact (`preprocessing.joblib`),
+- session-level metadata and file history.
+
+Evaluation metrics:
+
+- Classification: Accuracy, Balanced Accuracy, F1, Precision, Recall, ROC-AUC.
+- Regression: R2, MAE, RMSE.
+
+---
+
+## Where It Can Break
+
+- Rare classes can fail stratified splitting.
+- Weak target selection can reduce model validity.
+- Data drift can degrade performance after deployment.
+- Missing environment keys can block LLM-dependent steps.
+
+These are known boundaries and should be monitored in production.
+
+---
+
+## Future Direction
+
+- CI/CD quality gates with benchmark thresholds.
+- Automated drift and data-quality monitoring.
+- Extended explainability reports.
+- Containerized deployment templates.
+- Wider integration and regression test coverage.
+
+---
 
 ## Author
+
 Mayuresh Bairagi
+
+---
+
+This project is not just a model trainer; it is a reliability-first ML delivery backbone designed to turn experimentation into repeatable engineering outcomes.
