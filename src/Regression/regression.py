@@ -214,6 +214,33 @@ class AutoMLRegressor:
             self.logger.info("LLM feature selection disabled; using deterministic no-drop fallback")
             return []
 
+    @staticmethod
+    def _resolve_train_only_pruned_features(X_train: pd.DataFrame) -> Dict[str, List[str]]:
+        """Identify noisy features using train split only to avoid leakage."""
+        if X_train is None or X_train.empty:
+            return {"high_missing": [], "constant": [], "high_cardinality": []}
+
+        row_count = max(1, len(X_train))
+        high_missing = [
+            c for c in X_train.columns
+            if float(X_train[c].isna().mean()) > 0.6
+        ]
+        constant = [
+            c for c in X_train.columns
+            if int(X_train[c].nunique(dropna=False)) <= 1
+        ]
+        high_cardinality = []
+        for c in X_train.select_dtypes(include=["object", "category", "string"]).columns:
+            unique_count = int(X_train[c].nunique(dropna=True))
+            if unique_count > 100 and (unique_count / row_count) > 0.5:
+                high_cardinality.append(c)
+
+        return {
+            "high_missing": sorted(set(high_missing)),
+            "constant": sorted(set(constant)),
+            "high_cardinality": sorted(set(high_cardinality)),
+        }
+
         try:
             train_df = X_train.copy()
             train_df[self.target_col] = y_train
@@ -249,33 +276,6 @@ class AutoMLRegressor:
                 error=str(e),
             )
             return []
-
-    @staticmethod
-    def _resolve_train_only_pruned_features(X_train: pd.DataFrame) -> Dict[str, List[str]]:
-        """Identify noisy features using train split only to avoid leakage."""
-        if X_train is None or X_train.empty:
-            return {"high_missing": [], "constant": [], "high_cardinality": []}
-
-        row_count = max(1, len(X_train))
-        high_missing = [
-            c for c in X_train.columns
-            if float(X_train[c].isna().mean()) > 0.6
-        ]
-        constant = [
-            c for c in X_train.columns
-            if int(X_train[c].nunique(dropna=False)) <= 1
-        ]
-        high_cardinality = []
-        for c in X_train.select_dtypes(include=["object", "category", "string"]).columns:
-            unique_count = int(X_train[c].nunique(dropna=True))
-            if unique_count > 100 and (unique_count / row_count) > 0.5:
-                high_cardinality.append(c)
-
-        return {
-            "high_missing": sorted(set(high_missing)),
-            "constant": sorted(set(constant)),
-            "high_cardinality": sorted(set(high_cardinality)),
-        }
 
     def train_models(
         self, cv: int = 3, skip_heavy: bool = False

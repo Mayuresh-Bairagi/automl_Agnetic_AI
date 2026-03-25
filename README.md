@@ -5,65 +5,58 @@
 ![LangGraph](https://img.shields.io/badge/LangGraph-Agentic%20Workflow-purple)
 ![Status](https://img.shields.io/badge/Status-Active-success)
 
-Production-ready AutoML backend that transforms raw tabular datasets into actionable machine learning outcomes: feature engineering, EDA, model training, agentic orchestration, and natural-language dataset Q&A.
+AutoML backend for tabular datasets with session-based artifacts, automated preprocessing, model training, EDA, agent orchestration, dataset Q&A, and dashboard chart generation.
 
-## 📌 Project Details
+## Project Summary
 
 | Field | Value |
 |---|---|
-| Project Name | **AutoML Agnetic AI** |
-| Package | `auto_ml_model` |
+| Project Name | AutoML Agnetic AI |
 | Author | Mayuresh Bairagi |
-| Primary Stack | FastAPI, Scikit-learn, LangChain, LangGraph |
+| Stack | FastAPI, scikit-learn, LangChain, LangGraph |
+| Package | auto_ml_model |
 
-## ✨ Core Capabilities
+## Current Capabilities
 
-- Dataset upload with validation (`.csv`, `.xlsx`, `.xls`)
-- Automated feature engineering and type conversions
-- EDA report generation using `ydata-profiling`
-- AutoML model training for **classification** and **regression**
-- Agentic end-to-end workflow orchestration using LangGraph
-- Natural-language dataset Q&A with sandboxed pandas execution
-- Interactive dashboard chart specification generation
+- Upload CSV/Excel datasets with size and schema validation.
+- Run automated feature engineering and store session artifacts.
+- Generate EDA reports (HTML).
+- Train multiple models for classification and regression.
+- Run an end-to-end LangGraph AutoML agent pipeline.
+- Ask natural-language questions over a session dataset.
+- Generate interactive dashboard chart payloads.
 
-## 🏗️ System Architecture
+## Training Pipeline Safety Features
 
-```mermaid
-flowchart LR
-    A[Client / Frontend] --> B[FastAPI Service]
-    B --> C[Upload & Feature Engineering]
-    B --> D[EDA Generation]
-    B --> E[AutoML Training]
-    B --> F[LangGraph Agent]
-    B --> G[Dataset Q&A]
-    B --> H[Interactive Dashboard]
+The training flow includes leakage and quality guards that were added to improve reliability:
 
-    C --> I[(Session Data Store)]
-    D --> I
-    E --> I
-    F --> I
-    G --> I
-    H --> I
-```
+- Target validation before model training:
+    - target column must exist,
+    - classification target must have at least 2 classes,
+    - regression target must be sufficiently numeric.
+- Train-only feature selection and train-only noisy feature pruning.
+- Protected target-like column handling in feature engineering.
+- Duplicate overlap detection between train and test with enforced removal.
+- Imbalance-aware model selection for classification (balanced accuracy based search/evaluation).
 
-## 🔄 Agent Pipeline (LangGraph)
+## Session Artifacts
 
-```mermaid
-flowchart TD
-    S[Start] --> L[load_dataset]
-    L --> T[detect_target]
-    T --> M[train_models]
-    M --> R[generate_report]
-    R --> E[End]
+Each uploaded dataset is processed into a session folder under:
 
-    L -. error .-> X[End with Error]
-    T -. error .-> X
-    M -. error .-> X
-```
+data/datasetAnalysis/<session_id>/
 
-## 🚀 Quick Start
+Typical artifacts:
 
-### 1) Clone and install
+- raw_file.csv
+- processed_file.csv
+- preprocessing.joblib
+- model .joblib files (per trained model)
+- index.html (EDA report, when generated)
+- baseline_metrics.json (when baseline runner is used)
+
+## Quick Start
+
+### 1) Install dependencies
 
 ```bash
 git clone https://github.com/Mayuresh-Bairagi/automl_Agnetic_AI.git
@@ -71,9 +64,9 @@ cd automl_Agnetic_AI
 pip install -r requirements.txt
 ```
 
-### 2) Configure environment variables
+### 2) Configure environment
 
-Create a `.env` file in the project root:
+Create a .env file in project root:
 
 ```env
 GROQ_API_KEY=your_groq_key
@@ -81,46 +74,80 @@ GOOGLE_API_KEY=your_google_key
 LLM_PROVIDER=groq
 ```
 
-### 3) Run the API
-
-```bash
-python app/main.py
-```
-
-Or run directly with Uvicorn:
+### 3) Run API
 
 ```bash
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-## 🧩 API Endpoints
+or:
+
+```bash
+python app/main.py
+```
+
+## API Endpoints
 
 | Endpoint | Method | Description |
 |---|---|---|
-| `/` | GET | Health check |
-| `/upload` | POST | Upload dataset and generate processed session data |
-| `/eda` | POST | Generate EDA HTML report URL |
-| `/ml-models` | POST | Train ML models and return metrics |
-| `/agent/run` | POST | Execute end-to-end AutoML agent pipeline |
-| `/chat` | POST | Ask natural-language questions about dataset |
-| `/dashboard/charts` | POST | Generate Plotly chart payloads |
-| `/session/{session_id}/history` | GET | Return full session artifacts and history metadata |
+| / | GET | Health check |
+| /upload | POST | Upload dataset and generate session artifacts |
+| /eda | POST | Generate EDA report URL for session |
+| /ml-models | POST | Detect target and train ML models |
+| /agent/run | POST | Run LangGraph end-to-end agent pipeline |
+| /chat | POST | Dataset Q&A using generated pandas code |
+| /dashboard/charts | POST | Generate dashboard chart specifications |
+| /session/{session_id}/history | GET | Return session artifacts and metadata |
 
-## 📦 Key Dependencies
+## Baseline Runner (Reproducible Benchmark)
+
+Use the baseline runner to generate deterministic benchmark artifacts in baseline_metrics.json.
+
+### Classification example
+
+```bash
+python src/evaluation/baseline_runner.py \
+    --session-id <session_id> \
+    --target-col <target_column> \
+    --problem-type classification \
+    --cv 2 \
+    --max-rows 3000
+```
+
+### Regression example
+
+```bash
+python src/evaluation/baseline_runner.py \
+    --session-id <session_id> \
+    --target-col <target_column> \
+    --problem-type regression \
+    --cv 2 \
+    --max-rows 3000
+```
+
+## Tests
+
+Run integrity tests:
+
+```bash
+pytest tests/test_pipeline_integrity.py -q -rA
+```
+
+## Key Dependencies
 
 | Category | Packages |
 |---|---|
-| API | `fastapi`, `uvicorn`, `python-multipart` |
-| Data & ML | `pandas`, `numpy`, `scikit-learn`, `xgboost`, `lightgbm`, `catboost`, `pycaret` |
-| Visualization | `matplotlib`, `seaborn`, `plotly`, `ydata-profiling` |
-| LLM & Agentic | `langchain`, `langchain_community`, `langchain_google_genai`, `langchain_groq`, `langgraph` |
-| Utilities | `joblib`, `openpyxl`, `structlog`, `python-dotenv` |
+| API | fastapi, uvicorn, python-multipart |
+| Data/ML | pandas, numpy, scikit-learn, xgboost, lightgbm, catboost |
+| Agent/LLM | langchain, langchain_community, langchain_google_genai, langchain_groq, langgraph |
+| Visualization | plotly, ydata-profiling, seaborn, matplotlib |
+| Utilities | joblib, openpyxl, python-dotenv, structlog |
 
-## 🧪 Development Notes
+## Notes
 
-- Current repository does not include a formal test suite configuration.
-- Recommended next step: add unit tests for API request/response validation and pipeline components.
+- For classification with rare classes, stratified train/test split can fail if a class has fewer than 2 samples.
+- Use explicit target selection for benchmarking to avoid invalid inferred targets.
 
-## 📄 License
+## License
 
-No license file is currently present in the repository. Add a `LICENSE` file to define usage terms.
+No LICENSE file is currently included in this repository.
