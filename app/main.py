@@ -227,12 +227,18 @@ async def ml_model(request: request_ml_models):
 
         results_dict = results_df.to_dict(orient="records")
 
+        base_url = "http://127.0.0.1:8000/data"
+        downloadable_model_paths = {
+            name: f"{base_url}/{session_id}/{Path(path).name}" 
+            for name, path in model_paths.items()
+        }
+
         return {
             "session_id": session_id,
             "problem_type": problem_statement_type,
             "target_variable": result.get("target_variable"),
             "results": results_dict,
-            "model_paths": model_paths,
+            "model_paths": downloadable_model_paths,
         }
 
     except HTTPException:
@@ -268,6 +274,14 @@ async def agent_run(request: AgentRunRequest):
             )
 
         report = final_state.get("report") or {}
+        
+        base_url = "http://127.0.0.1:8000/data"
+        original_model_paths = report.get("model_paths") or {}
+        downloadable_model_paths = {
+            name: f"{base_url}/{request.session_id}/{Path(path).name}" 
+            for name, path in original_model_paths.items()
+        }
+
         return AgentRunResponse(
             session_id=request.session_id,
             status="ok",
@@ -277,7 +291,7 @@ async def agent_run(request: AgentRunRequest):
             best_score=report.get("best_score"),
             metric=report.get("metric"),
             all_results=report.get("all_results"),
-            model_paths=report.get("model_paths"),
+            model_paths=downloadable_model_paths,
         )
 
     except HTTPException:
