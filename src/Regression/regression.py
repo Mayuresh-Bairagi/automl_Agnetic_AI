@@ -15,7 +15,7 @@ from sklearn.linear_model import ElasticNet, Lasso, LinearRegression, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import KFold, cross_val_score, GridSearchCV, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import MinMaxScaler, OneHotEncoder
+from sklearn.preprocessing import OneHotEncoder, RobustScaler
 from sklearn.svm import SVR
 
 XGBRegressor = None
@@ -38,6 +38,7 @@ except Exception:
 from logger.customlogger import CustomLogger
 from expection.customExpection import AutoML_Exception
 from src.problem_statement.AutoFeatureSelector import FeatureSelector
+from src.preprocessing import RobustTabularCleaner
 
 
 class AutoMLRegressor:
@@ -112,6 +113,7 @@ class AutoMLRegressor:
             os.makedirs(self.output_dir, exist_ok=True)
 
             self.preprocessor: Optional[ColumnTransformer] = None
+            self.cleaner: Optional[RobustTabularCleaner] = None
             self.best_model = None
             self.results_df: Optional[pd.DataFrame] = None
             self.trained_models: Dict = {}
@@ -136,7 +138,7 @@ class AutoMLRegressor:
         numeric_pipeline = Pipeline(
             steps=[
                 ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", MinMaxScaler()),
+                ("scaler", RobustScaler()),
             ]
         )
         categorical_pipeline = Pipeline(
@@ -191,6 +193,30 @@ class AutoMLRegressor:
             X = df_work.drop(self.target_col, axis=1)
             y = df_work[self.target_col]
 
+            # Enforce numeric regression targets and drop rows that remain invalid.
+            if not pd.api.types.is_numeric_dtype(y):
+                y = (
+                    y.astype("string")
+                    .str.strip()
+                    .str.replace(",", "", regex=False)
+                    .str.replace(r"[^0-9.\-]+", "", regex=True)
+                    .replace({"": pd.NA, "-": pd.NA, ".": pd.NA, "-.": pd.NA})
+                )
+            y = pd.to_numeric(y, errors="coerce")
+
+            valid_target_mask = y.notna() & np.isfinite(y.to_numpy(dtype=float, na_value=np.nan))
+            if not bool(valid_target_mask.any()):
+                raise ValueError("Regression target has no valid numeric values after coercion")
+
+            if not bool(valid_target_mask.all()):
+                dropped_rows = int((~valid_target_mask).sum())
+                self.logger.warning(
+                    "Dropping rows with invalid regression target values",
+                    dropped_rows=dropped_rows,
+                )
+                X = X.loc[valid_target_mask].copy()
+                y = y.loc[valid_target_mask].copy()
+
             if self.target_col in X.columns:
                 raise ValueError("Target leakage detected: target column present in features")
 
@@ -215,33 +241,6 @@ class AutoMLRegressor:
         if not self.use_llm_feature_selection:
             self.logger.info("LLM feature selection disabled; using deterministic no-drop fallback")
             return []
-
-    @staticmethod
-    def _resolve_train_only_pruned_features(X_train: pd.DataFrame) -> Dict[str, List[str]]:
-        """Identify noisy features using train split only to avoid leakage."""
-        if X_train is None or X_train.empty:
-            return {"high_missing": [], "constant": [], "high_cardinality": []}
-
-        row_count = max(1, len(X_train))
-        high_missing = [
-            c for c in X_train.columns
-            if float(X_train[c].isna().mean()) > 0.6
-        ]
-        constant = [
-            c for c in X_train.columns
-            if int(X_train[c].nunique(dropna=False)) <= 1
-        ]
-        high_cardinality = []
-        for c in X_train.select_dtypes(include=["object", "category", "string"]).columns:
-            unique_count = int(X_train[c].nunique(dropna=True))
-            if unique_count > 100 and (unique_count / row_count) > 0.5:
-                high_cardinality.append(c)
-
-        return {
-            "high_missing": sorted(set(high_missing)),
-            "constant": sorted(set(constant)),
-            "high_cardinality": sorted(set(high_cardinality)),
-        }
 
         try:
             train_df = X_train.copy()
@@ -278,6 +277,33 @@ class AutoMLRegressor:
                 error=str(e),
             )
             return []
+
+    @staticmethod
+    def _resolve_train_only_pruned_features(X_train: pd.DataFrame) -> Dict[str, List[str]]:
+        """Identify noisy features using train split only to avoid leakage."""
+        if X_train is None or X_train.empty:
+            return {"high_missing": [], "constant": [], "high_cardinality": []}
+
+        row_count = max(1, len(X_train))
+        high_missing = [
+            c for c in X_train.columns
+            if float(X_train[c].isna().mean()) > 0.6
+        ]
+        constant = [
+            c for c in X_train.columns
+            if int(X_train[c].nunique(dropna=False)) <= 1
+        ]
+        high_cardinality = []
+        for c in X_train.select_dtypes(include=["object", "category", "string"]).columns:
+            unique_count = int(X_train[c].nunique(dropna=True))
+            if unique_count > 100 and (unique_count / row_count) > 0.5:
+                high_cardinality.append(c)
+
+        return {
+            "high_missing": sorted(set(high_missing)),
+            "constant": sorted(set(constant)),
+            "high_cardinality": sorted(set(high_cardinality)),
+        }
 
     def train_models(
         self, cv: int = 3, skip_heavy: bool = False
@@ -356,13 +382,42 @@ class AutoMLRegressor:
             if len(X_test) == 0:
                 raise ValueError("All test rows overlapped with training rows after dedupe enforcement")
 
+        # Fit robust cleaner on train split only and apply same transform to test split.
+        self.cleaner = RobustTabularCleaner(problem_type="regression")
+        X_train_clean = self.cleaner.fit_transform(X_train.copy())
+        X_test_clean = self.cleaner.transform(X_test.copy())
+
+        train_clean_sanity = self.cleaner.run_sanity_checks(X_train_clean)
+        test_clean_sanity = self.cleaner.run_sanity_checks(X_test_clean)
+        self.logger.info(
+            "Robust cleaning completed",
+            train_cleaning_sanity=train_clean_sanity,
+            test_cleaning_sanity=test_clean_sanity,
+            cleaning_audit=self.cleaner.get_audit_report(),
+        )
+
+        if X_train_clean.shape[1] == 0:
+            raise ValueError("No features remain after robust cleaning on training data")
+
+        effective_cv = int(min(cv, len(X_train_clean)))
+        if effective_cv < 2:
+            raise ValueError("Not enough rows to run cross-validation")
+        if effective_cv != int(cv):
+            self.logger.warning(
+                "Reducing CV folds to match available training rows",
+                requested_cv=int(cv),
+                effective_cv=effective_cv,
+                train_rows=int(len(X_train_clean)),
+            )
+
         # Fit preprocessing pipeline on train only
-        X_train_t, numeric_cols, categorical_cols = self._fit_preprocessor(X_train.copy())
-        X_test_t = self._transform_with_preprocessor(X_test.copy())
+        X_train_t, numeric_cols, categorical_cols = self._fit_preprocessor(X_train_clean.copy())
+        X_test_t = self._transform_with_preprocessor(X_test_clean.copy())
 
         # Persist preprocessing artefacts
         tracked_feature_names = list(getattr(self.preprocessor, "feature_names_in_", []))
         self.preprocessing_objects = {
+            "cleaner": self.cleaner,
             "preprocessor": self.preprocessor,
             "target_encoder": None,
             "dropped_features": self.dropped_features,
@@ -378,8 +433,11 @@ class AutoMLRegressor:
                 "dropped_features": self.dropped_features,
                 "train_rows": int(len(X_train)),
                 "test_rows": int(len(X_test)),
-                "cv_folds": int(cv),
+                "cv_folds": int(effective_cv),
                 "skip_heavy": bool(skip_heavy),
+                "cleaning_audit": self.cleaner.get_audit_report() if self.cleaner else {},
+                "train_cleaning_sanity": train_clean_sanity,
+                "test_cleaning_sanity": test_clean_sanity,
                 "library_versions": {
                     "python": sys.version.split()[0],
                     "sklearn": sklearn_pkg.__version__,
@@ -470,7 +528,7 @@ class AutoMLRegressor:
 
         results = []
         best_r2 = -float("inf")
-        kf = KFold(n_splits=cv, shuffle=True, random_state=self.random_state)
+        kf = KFold(n_splits=effective_cv, shuffle=True, random_state=self.random_state)
 
         for name, (model, params) in models.items():
             try:

@@ -6,6 +6,7 @@ import types
 import unittest
 import uuid
 import zipfile
+from unittest.mock import patch
 
 import joblib
 import numpy as np
@@ -229,6 +230,43 @@ class InferenceTrackingEndpointTests(unittest.TestCase):
         self.assertEqual(summary.get("best_metric"), "Balanced_Accuracy")
         self.assertAlmostEqual(float(summary.get("score_gap_vs_runner_up", 0.0)), 0.05, places=3)
         self.assertTrue(isinstance(summary.get("reason"), str) and len(summary.get("reason")) > 0)
+
+    def test_ml_models_request_rejects_invalid_cv(self) -> None:
+        response = self.client.post(
+            "/ml-models",
+            json={
+                "session_id": "abc",
+                "problem_statement": "predict y",
+                "cv": 1,
+            },
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_upload_preview_serializes_nan_and_inf(self) -> None:
+        fake_df = pd.DataFrame(
+            {
+                "a": [1.0, np.nan],
+                "b": [np.inf, -np.inf],
+            }
+        )
+
+        class _FakeFeatureEngineer:
+            def __init__(self, dataset):
+                self.dataset = dataset
+
+            def generate_features(self):
+                return fake_df, "session_id_fake"
+
+        csv_bytes = io.BytesIO(b"x,y\n1,2\n3,4\n5,6\n7,8\n9,10\n11,12\n13,14\n15,16\n17,18\n19,20\n")
+        files = {"file": ("sample.csv", csv_bytes, "text/csv")}
+
+        with patch("app.main.FeatureEngineer1", _FakeFeatureEngineer):
+            response = self.client.post("/upload", files=files)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertIn("preview", payload)
+        self.assertTrue(isinstance(payload["preview"], list))
 
 
 if __name__ == "__main__":

@@ -285,8 +285,28 @@ class FeatureEngineer1:
                                 continue
 
                             safe_re = _SafeRegex(re)
-                            exec_globals = {"pd": pd, "re": safe_re, "np": np}
+                            safe_builtins = {
+                                "abs": abs,
+                                "min": min,
+                                "max": max,
+                                "len": len,
+                                "sum": sum,
+                                "round": round,
+                                "str": str,
+                                "int": int,
+                                "float": float,
+                                "sorted": sorted,
+                                "list": list,
+                                "dict": dict,
+                            }
+                            exec_globals = {
+                                "__builtins__": safe_builtins,
+                                "pd": pd,
+                                "re": safe_re,
+                                "np": np,
+                            }
                             # Support generated snippets that use either `df` or `converted_df`.
+                            previous_df = self.converted_df
                             exec_locals = {"converted_df": self.converted_df, "df": self.converted_df}
                             try:
                                 exec(clean_code, exec_globals, exec_locals)
@@ -305,7 +325,7 @@ class FeatureEngineer1:
                                     "Generated code returned invalid dataframe; restoring previous dataframe",
                                     column=col,
                                 )
-                                self.converted_df = self.df.copy()
+                                self.converted_df = previous_df
                             self.converted_df.drop(columns=[col], inplace=True, errors="ignore")
                             self.log.debug("Dropped original object column", column=col)
                         else:

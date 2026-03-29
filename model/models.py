@@ -1,4 +1,4 @@
-from pydantic import BaseModel , RootModel
+from pydantic import BaseModel , RootModel, Field
 from typing import List , Union, Literal,Optional
 from enum import Enum
 
@@ -40,8 +40,11 @@ class FeatureSelectionOutput(BaseModel):
 
 
 class request_ml_models(BaseModel):
-    session_id : str
-    problem_statement : str
+    session_id : str = Field(min_length=3, max_length=200)
+    problem_statement : str = Field(min_length=3, max_length=2000)
+    cv: int = Field(default=3, ge=2, le=10)
+    skip_heavy: bool = False
+    use_llm_feature_selection: bool = True
 
 
 # ---------------------------------------------------------------------------

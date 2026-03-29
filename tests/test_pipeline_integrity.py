@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.Classifier.MLClassifier import AutoMLClassifier
 from src.Regression.regression import AutoMLRegressor
+from src.preprocessing import RobustTabularCleaner
 
 
 class PipelineIntegrityTests(unittest.TestCase):
@@ -149,6 +150,87 @@ class PipelineIntegrityTests(unittest.TestCase):
         X_test_t = model._transform_with_preprocessor(X_test)
 
         self.assertEqual(X_train_t.shape[1], X_test_t.shape[1])
+
+    def test_regressor_preprocess_coerces_numeric_like_target(self) -> None:
+        df = pd.DataFrame(
+            {
+                "city": ["A", "B", "C", "D"],
+                "num": [1.0, 2.0, 3.0, 4.0],
+                "target": ["1,000", "$2000", "bad", "3000"],
+            }
+        )
+        self._write_processed(df)
+
+        result = {"target_variable": "target", "problem_type": "regression"}
+        model = AutoMLRegressor(
+            session_id=self.session_id,
+            problem_statement="predict target",
+            result=result,
+            df=df,
+        )
+
+        X, y = model.preprocess()
+        self.assertEqual(len(X), 3)
+        self.assertEqual(len(y), 3)
+        self.assertTrue(np.issubdtype(np.array(y).dtype, np.number))
+
+    def test_robust_cleaner_normalizes_strings_and_placeholders(self) -> None:
+        df = pd.DataFrame(
+            {
+                " Age ": [" 20 ", "N/A", " 30"],
+                "City\t": [" New   York ", "new york", "\u200bUnknown"],
+                "income": ["$1,000", "1e3", "-"],
+                "event date": ["2024-01-01", "01/02/24", "bad-date"],
+            }
+        )
+        cleaner = RobustTabularCleaner(problem_type="regression", rare_min_count=1)
+        cleaned = cleaner.fit_transform(df)
+        audit = cleaner.get_audit_report()
+
+        self.assertIn("age", cleaned.columns)
+        self.assertIn("event_date__year", cleaned.columns)
+        self.assertIn("event_date__missing", cleaned.columns)
+        self.assertIn("city", audit.get("dropped_columns", []))
+        self.assertIn("income", audit.get("dropped_columns", []))
+        self.assertTrue(pd.isna(cleaned.loc[1, "age"]))
+
+    def test_robust_cleaner_aligns_inference_schema(self) -> None:
+        train_df = pd.DataFrame(
+            {
+                "Age": [20, 25, 30],
+                "City": ["NY", "LA", "NY"],
+            }
+        )
+        test_df = pd.DataFrame(
+            {
+                " age ": [35],
+                "CITY": ["Chicago"],
+                "Extra Field": ["ignored"],
+            }
+        )
+        cleaner = RobustTabularCleaner(problem_type="classification", rare_min_count=1)
+        cleaner.fit(train_df)
+        transformed = cleaner.transform(test_df)
+
+        self.assertListEqual(list(transformed.columns), list(cleaner.output_columns_))
+        self.assertEqual(transformed.shape[1], len(cleaner.output_columns_))
+
+    def test_robust_cleaner_canonicalizes_near_duplicate_categories(self) -> None:
+        df = pd.DataFrame(
+            {
+                "City": ["NY", "new york", "LA", "los angeles"],
+                "Value": [1, 2, 3, 4],
+            }
+        )
+        cleaner = RobustTabularCleaner(problem_type="regression", rare_min_count=1)
+        cleaned = cleaner.fit_transform(df)
+
+        self.assertIn("city", cleaned.columns)
+        unique_cities = set(cleaned["city"].dropna().astype(str).tolist())
+        self.assertIn("new york", unique_cities)
+        self.assertIn("los angeles", unique_cities)
+        self.assertNotIn("ny", unique_cities)
+        self.assertNotIn("la", unique_cities)
 
 
 if __name__ == "__main__":

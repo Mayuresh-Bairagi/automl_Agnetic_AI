@@ -143,6 +143,21 @@ def validate_preprocessing_artifact(
                 "tracked feature_names_in does not match preprocessor.feature_names_in_"
             )
 
+    cleaner = preprocessing_obj.get("cleaner")
+    if cleaner is None:
+        warnings.append("cleaner missing; robust text/schema normalization may be reduced")
+    else:
+        if not hasattr(cleaner, "transform"):
+            msg = "cleaner object does not implement transform"
+            if strict:
+                errors.append(msg)
+            else:
+                warnings.append(msg)
+
+    cleaning_audit = tracking_metadata.get("cleaning_audit")
+    if cleaning_audit is not None and not isinstance(cleaning_audit, dict):
+        warnings.append("tracking_metadata.cleaning_audit should be a dictionary")
+
     if not _as_list(preprocessing_obj.get("dropped_features")) and not _as_list(
         tracking_metadata.get("dropped_features")
     ):

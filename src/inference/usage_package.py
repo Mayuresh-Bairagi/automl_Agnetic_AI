@@ -61,19 +61,24 @@ def load_artifacts(model_path: str, preprocessing_path: str):
     model = joblib.load(model_path)
     preprocessing = joblib.load(preprocessing_path)
 
+    cleaner = preprocessing.get("cleaner")
     preprocessor = preprocessing.get("preprocessor")
     target_encoder = preprocessing.get("target_encoder")
     dropped_features = preprocessing.get("dropped_features", [])
 
+    if not isinstance(dropped_features, list):
+        dropped_features = []
+
     if preprocessor is None:
         raise ValueError("Preprocessing artifact is missing 'preprocessor'.")
 
-    return model, preprocessor, target_encoder, dropped_features
+    return model, cleaner, preprocessor, target_encoder, dropped_features
 
 
-def describe_preprocessing(preprocessor, target_encoder, dropped_features: list[str]) -> None:
+def describe_preprocessing(cleaner, preprocessor, target_encoder, dropped_features: list[str]) -> None:
     print("Preprocessing summary:")
     print(f"- Dropped features before transform: {{dropped_features}}")
+    print(f"- Robust cleaning layer available: {{'yes' if cleaner is not None else 'no'}}")
 
     transformers = getattr(preprocessor, "transformers_", [])
     for transformer_name, transformer_obj, transformer_cols in transformers:
@@ -102,6 +107,19 @@ def align_input_to_preprocessor(df: pd.DataFrame, preprocessor) -> pd.DataFrame:
 
 def prepare_features(input_df: pd.DataFrame, preprocessor, dropped_features: list[str]):
     cleaned = input_df.drop(columns=dropped_features, errors="ignore")
+    cleaned = align_input_to_preprocessor(cleaned, preprocessor)
+    return preprocessor.transform(cleaned)
+
+
+def prepare_features_with_cleaner(
+    input_df: pd.DataFrame,
+    cleaner,
+    preprocessor,
+    dropped_features: list[str],
+):
+    cleaned = input_df.drop(columns=dropped_features, errors="ignore")
+    if cleaner is not None:
+        cleaned = cleaner.transform(cleaned)
     cleaned = align_input_to_preprocessor(cleaned, preprocessor)
     return preprocessor.transform(cleaned)
 
@@ -138,16 +156,16 @@ def main() -> None:
     input_df = pd.read_csv(input_path)
 
     print("Step 3/6: Loading model and preprocessing artifacts...")
-    model, preprocessor, target_encoder, dropped_features = load_artifacts(
+    model, cleaner, preprocessor, target_encoder, dropped_features = load_artifacts(
         model_path=args.model_path,
         preprocessing_path=args.preprocessing_path,
     )
 
     print("Step 4/6: Explaining preprocessing and conversions...")
-    describe_preprocessing(preprocessor, target_encoder, dropped_features)
+    describe_preprocessing(cleaner, preprocessor, target_encoder, dropped_features)
 
     print("Step 5/6: Applying preprocessing and prediction...")
-    transformed = prepare_features(input_df, preprocessor, dropped_features)
+    transformed = prepare_features_with_cleaner(input_df, cleaner, preprocessor, dropped_features)
     out_df = predict_values(input_df, model, transformed, target_encoder)
 
     print("Step 6/6: Saving predictions...")

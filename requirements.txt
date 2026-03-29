@@ -1,7 +1,8 @@
 fastapi
 uvicorn
 pandas
-numpy
+numpy<2.4
+numba<0.63
 scikit-learn
 xgboost
 lightgbm

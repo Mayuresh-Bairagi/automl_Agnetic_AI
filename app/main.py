@@ -43,6 +43,30 @@ _MIN_COLS = 2
 _ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
 
 
+def _json_safe_payload(value):
+    """Recursively convert NaN/Inf/pandas missing values into JSON-safe values."""
+    if isinstance(value, dict):
+        return {k: _json_safe_payload(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe_payload(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_safe_payload(v) for v in value]
+    if value is None:
+        return None
+
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    if isinstance(value, float):
+        if value == float("inf") or value == float("-inf") or value != value:
+            return None
+
+    return value
+
+
 def _coerce_numeric_target(series: pd.Series) -> pd.Series:
     """Coerce user-provided numeric-like targets to numbers for validation.
 
@@ -146,7 +170,7 @@ async def upload_file(file: UploadFile = File(...)):
         fe = FeatureEngineer1(df)
         df, session_id = fe.generate_features()
 
-        preview = df.head(10).to_dict(orient="records")
+        preview = _json_safe_payload(df.head(10).to_dict(orient="records"))
 
         return {
             "filename": file.filename,
@@ -213,6 +237,16 @@ async def ml_model(request: request_ml_models):
                     detail=f"Classification target '{target_col}' has fewer than 2 classes.",
                 )
 
+            class_sizes = df[target_col].value_counts(dropna=True)
+            if int(class_sizes.min()) < 2:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Classification target '{target_col}' contains classes with fewer than 2 rows; "
+                        "cannot create a stable stratified split."
+                    ),
+                )
+
         if problem_statement_type.lower() == "regression":
             numeric_target = _coerce_numeric_target(df[target_col])
             valid_ratio = float(numeric_target.notna().mean()) if len(numeric_target) else 0.0
@@ -239,9 +273,11 @@ async def ml_model(request: request_ml_models):
                 problem_statement=problem_statement,
                 result=result,
                 df=df,
+                use_llm_feature_selection=bool(request.use_llm_feature_selection),
             )
             results_df, trained_models, model_paths = automl_regressor.train_models(
-                skip_heavy=True
+                cv=int(request.cv),
+                skip_heavy=bool(request.skip_heavy),
             )
 
         elif problem_statement_type.lower() == "classification":
@@ -250,9 +286,11 @@ async def ml_model(request: request_ml_models):
                 problem_statement=problem_statement,
                 result=result,
                 df=df,
+                use_llm_feature_selection=bool(request.use_llm_feature_selection),
             )
             results_df, trained_models, model_paths = automl_classifier.train_models(
-                skip_heavy=True
+                cv=int(request.cv),
+                skip_heavy=bool(request.skip_heavy),
             )
 
         else:
@@ -299,7 +337,7 @@ async def ml_model(request: request_ml_models):
             else "Download and run recommended model package"
         )
 
-        return {
+        response_payload = {
             "session_id": session_id,
             "problem_type": problem_statement_type,
             "target_variable": result.get("target_variable"),
@@ -314,6 +352,7 @@ async def ml_model(request: request_ml_models):
             "usage_notes": get_usage_notes(),
             "preprocessing_validation": preprocessing_validation,
         }
+        return _json_safe_payload(response_payload)
 
     except HTTPException:
         raise

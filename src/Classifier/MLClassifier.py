@@ -22,7 +22,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold, cross_val_score, GridSearchCV, train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler, OneHotEncoder
+from sklearn.preprocessing import LabelEncoder, OneHotEncoder, RobustScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
@@ -41,6 +41,7 @@ except ImportError:
 from logger.customlogger import CustomLogger
 from expection.customExpection import AutoML_Exception
 from src.problem_statement.AutoFeatureSelector import FeatureSelector
+from src.preprocessing import RobustTabularCleaner
 
 
 class AutoMLClassifier:
@@ -118,6 +119,7 @@ class AutoMLClassifier:
             self.label_encoders: Dict[str, LabelEncoder] = {}
             self.target_encoder: Optional[LabelEncoder] = None
             self.preprocessor: Optional[ColumnTransformer] = None
+            self.cleaner: Optional[RobustTabularCleaner] = None
             self.best_model = None
             self.results_df: Optional[pd.DataFrame] = None
             self.trained_models: Dict = {}
@@ -142,7 +144,7 @@ class AutoMLClassifier:
         numeric_pipeline = Pipeline(
             steps=[
                 ("imputer", SimpleImputer(strategy="median")),
-                ("scaler", MinMaxScaler()),
+                ("scaler", RobustScaler()),
             ]
         )
         categorical_pipeline = Pipeline(
@@ -371,13 +373,43 @@ class AutoMLClassifier:
             if len(X_test) == 0:
                 raise ValueError("All test rows overlapped with training rows after dedupe enforcement")
 
+        # ---- Fit robust cleaner on train only; apply same schema to test ----
+        self.cleaner = RobustTabularCleaner(problem_type="classification")
+        X_train_clean = self.cleaner.fit_transform(X_train.copy())
+        X_test_clean = self.cleaner.transform(X_test.copy())
+
+        train_clean_sanity = self.cleaner.run_sanity_checks(X_train_clean)
+        test_clean_sanity = self.cleaner.run_sanity_checks(X_test_clean)
+        self.logger.info(
+            "Robust cleaning completed",
+            train_cleaning_sanity=train_clean_sanity,
+            test_cleaning_sanity=test_clean_sanity,
+            cleaning_audit=self.cleaner.get_audit_report(),
+        )
+
+        if X_train_clean.shape[1] == 0:
+            raise ValueError("No features remain after robust cleaning on training data")
+
+        min_class_samples = int(pd.Series(y_train).value_counts(dropna=True).min())
+        effective_cv = int(min(cv, max(2, min_class_samples)))
+        if effective_cv < 2:
+            raise ValueError("Not enough class samples to run cross-validation")
+        if effective_cv != int(cv):
+            self.logger.warning(
+                "Reducing CV folds to match minority class support",
+                requested_cv=int(cv),
+                effective_cv=effective_cv,
+                min_class_samples=min_class_samples,
+            )
+
         # ---- Fit preprocessing pipeline on train only ----
-        X_train_t, numeric_cols, categorical_cols = self._fit_preprocessor(X_train.copy())
-        X_test_t = self._transform_with_preprocessor(X_test.copy())
+        X_train_t, numeric_cols, categorical_cols = self._fit_preprocessor(X_train_clean.copy())
+        X_test_t = self._transform_with_preprocessor(X_test_clean.copy())
 
         # Persist preprocessing artefacts
         tracked_feature_names = list(getattr(self.preprocessor, "feature_names_in_", []))
         self.preprocessing_objects = {
+            "cleaner": self.cleaner,
             "preprocessor": self.preprocessor,
             "target_encoder": self.target_encoder,
             "dropped_features": self.dropped_features,
@@ -398,8 +430,11 @@ class AutoMLClassifier:
                 ),
                 "train_rows": int(len(X_train)),
                 "test_rows": int(len(X_test)),
-                "cv_folds": int(cv),
+                "cv_folds": int(effective_cv),
                 "skip_heavy": bool(skip_heavy),
+                "cleaning_audit": self.cleaner.get_audit_report() if self.cleaner else {},
+                "train_cleaning_sanity": train_clean_sanity,
+                "test_cleaning_sanity": test_clean_sanity,
                 "library_versions": {
                     "python": sys.version.split()[0],
                     "sklearn": sklearn_pkg.__version__,
@@ -503,7 +538,7 @@ class AutoMLClassifier:
 
         results = []
         best_balanced_accuracy = -float("inf")
-        skf = StratifiedKFold(n_splits=cv, shuffle=True, random_state=self.random_state)
+        skf = StratifiedKFold(n_splits=effective_cv, shuffle=True, random_state=self.random_state)
 
         for name, (model, params) in models.items():
             try:
@@ -584,6 +619,9 @@ class AutoMLClassifier:
             except Exception as e:
                 self.logger.error(f"{name} training failed", error=str(e))
                 continue
+
+        if not results:
+            raise ValueError("No classification models were successfully trained")
 
         self.results_df = pd.DataFrame(results).sort_values(
             by=["Balanced_Accuracy", "Accuracy"], ascending=[False, False]
