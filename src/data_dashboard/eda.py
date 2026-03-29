@@ -1,15 +1,20 @@
 import pandas as pd
-from ydata_profiling import ProfileReport
 import os
 from logger.customlogger import CustomLogger
 from expection.customExpection import AutoML_Exception
 
+try:
+    from ydata_profiling import ProfileReport
+    _PROFILE_IMPORT_ERROR = None
+except Exception as exc:
+    ProfileReport = None
+    _PROFILE_IMPORT_ERROR = exc
+
 
 class EDA:
     def __init__(self, session_id: str):
+        self.log = CustomLogger().get_logger(__file__)
         try:
-            self.log = CustomLogger().get_logger(__file__)
-            
             self.session_id = session_id
             self.data_path = os.path.join(
                 os.getcwd(), 'data', 'datasetAnalysis', session_id, 'processed_file.csv'
@@ -40,6 +45,13 @@ class EDA:
 
     def generate_report(self):
         try:
+            if ProfileReport is None:
+                import_err = str(_PROFILE_IMPORT_ERROR) if _PROFILE_IMPORT_ERROR else "unknown import error"
+                raise ImportError(
+                    "ydata-profiling is unavailable in current environment. "
+                    f"Original import error: {import_err}"
+                )
+
             self.log.info("EDA report generation started", output_path=self.output_path)
             
             profile = ProfileReport(

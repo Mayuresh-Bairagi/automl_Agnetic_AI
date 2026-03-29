@@ -39,6 +39,66 @@ class TargetVariable:
             self.log.error('Error initializing Target Variable Handler', error=str(e))
             raise AutoML_Exception("Error initializing Target Variable Handler", e) from e
 
+    def _infer_problem_type_from_statement(self, problem_statement: str) -> str:
+        text = str(problem_statement or "").lower()
+        classification_hints = {
+            "class", "classification", "churn", "default", "fraud", "yes/no", "binary", "category"
+        }
+        regression_hints = {
+            "price", "amount", "cost", "revenue", "sales", "score", "predict", "forecast", "regression"
+        }
+        if any(h in text for h in classification_hints):
+            return "classification"
+        if any(h in text for h in regression_hints):
+            return "regression"
+        return "regression"
+
+    def _select_target_fallback(self, problem_statement: str) -> dict:
+        """Deterministic fallback when LLM target selection fails validation."""
+        statement = str(problem_statement or "").lower()
+        cols = list(self.df.columns)
+
+        keyword_priority = [
+            "target", "label", "class", "outcome", "price", "sales", "amount", "y"
+        ]
+        ranked_cols = sorted(
+            cols,
+            key=lambda c: (
+                min((statement.find(k) for k in keyword_priority if k in str(c).lower()), default=10**6),
+                0 if any(k in str(c).lower() for k in keyword_priority) else 1,
+                str(c).lower(),
+            ),
+        )
+
+        # If statement explicitly mentions a column name, trust that first.
+        for c in cols:
+            if str(c).lower() in statement:
+                target = c
+                break
+        else:
+            target = ranked_cols[0] if ranked_cols else None
+
+        if target is None:
+            raise ValueError("No columns available for fallback target selection")
+
+        inferred_problem_type = self._infer_problem_type_from_statement(problem_statement)
+        series = self.df[target]
+        numeric = pd.to_numeric(series, errors="coerce")
+        numeric_ratio = float(numeric.notna().mean()) if len(series) else 0.0
+        unique_count = int(series.nunique(dropna=True))
+
+        # Resolve ambiguous cases using data profile.
+        if inferred_problem_type == "regression" and numeric_ratio < 0.5 and unique_count <= 20:
+            inferred_problem_type = "classification"
+        if inferred_problem_type == "classification" and unique_count > 25 and numeric_ratio >= 0.8:
+            inferred_problem_type = "regression"
+
+        return {
+            "target_variable": target,
+            "problem_type": inferred_problem_type,
+            "reason": "deterministic-fallback",
+        }
+
     def _build_column_profiles(self) -> dict:
         profiles = {}
         total_rows = max(1, len(self.df))
@@ -69,14 +129,23 @@ class TargetVariable:
         try:
             column_names = list(self.df.columns)
             column_profiles = self._build_column_profiles()
-            response = self.chain.invoke(
-                {'return_instructions' : self.parser.get_format_instructions(),
-                'problem_statement' : Problem_Statement,
-                'columnnames' : column_names,
-                'column_profiles': column_profiles,
-                }
-            )
-            self._validate_target_response(response)
+            response = None
+            try:
+                response = self.chain.invoke(
+                    {'return_instructions' : self.parser.get_format_instructions(),
+                    'problem_statement' : Problem_Statement,
+                    'columnnames' : column_names,
+                    'column_profiles': column_profiles,
+                    }
+                )
+                self._validate_target_response(response)
+            except Exception as llm_error:
+                self.log.warning(
+                    "LLM target selection invalid; using deterministic fallback",
+                    error=str(llm_error),
+                )
+                response = self._select_target_fallback(Problem_Statement)
+
             self.log.info("Target variable prediction completed")
             return response,self.df
         except Exception as e :

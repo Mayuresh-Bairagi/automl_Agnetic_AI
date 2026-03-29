@@ -1,9 +1,12 @@
 import os
+from datetime import datetime
+import sys
 from typing import Dict, List, Optional, Tuple
 
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn as sklearn_pkg
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.impute import SimpleImputer
@@ -373,11 +376,37 @@ class AutoMLClassifier:
         X_test_t = self._transform_with_preprocessor(X_test.copy())
 
         # Persist preprocessing artefacts
+        tracked_feature_names = list(getattr(self.preprocessor, "feature_names_in_", []))
         self.preprocessing_objects = {
             "preprocessor": self.preprocessor,
             "target_encoder": self.target_encoder,
             "dropped_features": self.dropped_features,
             "pruned_features": pruned_map,
+            "tracking_metadata": {
+                "session_id": self.session_id,
+                "problem_type": "classification",
+                "target_column": self.target_col,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "numeric_features": numeric_cols,
+                "categorical_features": categorical_cols,
+                "feature_names_in": tracked_feature_names,
+                "dropped_features": self.dropped_features,
+                "target_classes": (
+                    [str(c) for c in self.target_encoder.classes_]
+                    if self.target_encoder is not None and hasattr(self.target_encoder, "classes_")
+                    else []
+                ),
+                "train_rows": int(len(X_train)),
+                "test_rows": int(len(X_test)),
+                "cv_folds": int(cv),
+                "skip_heavy": bool(skip_heavy),
+                "library_versions": {
+                    "python": sys.version.split()[0],
+                    "sklearn": sklearn_pkg.__version__,
+                    "pandas": pd.__version__,
+                    "numpy": np.__version__,
+                },
+            },
         }
         joblib.dump(
             self.preprocessing_objects,

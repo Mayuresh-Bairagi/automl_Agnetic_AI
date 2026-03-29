@@ -88,8 +88,25 @@ class CustomLogger:
             log_dir.glob("*.log"),
             key=lambda f: f.stat().st_mtime,
         )
+        root_logger = logging.getLogger()
+        active_log_files = {
+            Path(h.baseFilename)
+            for h in root_logger.handlers
+            if isinstance(h, logging.FileHandler) and getattr(h, "baseFilename", None)
+        }
+
         for f in log_files[:-n]:
-            f.unlink()
+            # On Windows, deleting an in-use file raises PermissionError (WinError 32).
+            if f in active_log_files:
+                continue
+            try:
+                f.unlink()
+            except PermissionError:
+                # Non-fatal cleanup failure; keep application flow running.
+                continue
+            except OSError:
+                # Covers other transient filesystem locks.
+                continue
 
     # Keep the old name as an alias for backward compatibility
     def deleteLog(self, n: int = 5) -> None:  # noqa: N802

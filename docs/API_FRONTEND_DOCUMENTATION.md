@@ -2,7 +2,7 @@
 
 Last updated:
 
-- 2026-03-26
+- 2026-03-28
 
 Base URL (local):
 
@@ -21,6 +21,8 @@ API endpoint index:
 - POST /agent/run
 - POST /chat
 - POST /dashboard/charts
+- GET /model-usage-script/{session_id}/{model_file_name}
+- GET /session/{session_id}/preprocessing/validate
 - GET /session/{session_id}/history
 
 ---
@@ -52,6 +54,20 @@ Use this section as the source of truth for recent behavior updates that may imp
 5) Session history endpoint remains backward-compatible:
 
 - Existing response keys are unchanged, but artifact lists may now include additional files such as `baseline_metrics.json`.
+
+6) New per-model usage package flow for frontend download actions:
+
+- `/ml-models` now returns `usage_script_paths` mapped by model name.
+- Frontend can directly open the selected model's URL to download a ZIP package with `use_model.py`, `requirements.txt`, `README.md`, `TECHNICAL_NOTES.md`, selected `*.joblib` model, `preprocessing.joblib`, and optional `input_template.csv`.
+
+7) New preprocessing consistency validation and strict gating:
+
+- `/ml-models` and `/session/{session_id}/history` now include `preprocessing_validation` output.
+- `/session/{session_id}/preprocessing/validate` returns both compatibility and strict checks.
+- `/model-usage-script/{session_id}/{model_file_name}` enforces strict validation by default with legacy fallback when `allow_legacy_override=true`.
+- Download response contains `X-Preprocessing-Validation-Mode` header with values:
+	- `strict`
+	- `legacy-override`
 
 ---
 
@@ -183,8 +199,46 @@ Success response (200):
 			}
 		}
 	],
+	"best_model_summary": {
+		"best_model": "LogisticRegression",
+		"best_metric": "Balanced_Accuracy",
+		"best_score": 0.83,
+		"runner_up_model": "DecisionTree",
+		"score_gap_vs_runner_up": 0.02,
+		"reason": "LogisticRegression ranked highest by Balanced_Accuracy and outperformed DecisionTree on the same metric.",
+		"source": "rule-based"
+	},
+	"recommended_model": "LogisticRegression",
+	"recommended_model_path": "http://127.0.0.1:8000/data/session_id_20260324_101530_ab12cd34/LogisticRegression.joblib",
+	"recommended_usage_script_path": "http://127.0.0.1:8000/model-usage-script/session_id_20260324_101530_ab12cd34/LogisticRegression.joblib",
+	"recommended_download_label": "Download and run LogisticRegression package",
 	"model_paths": {
-		"LogisticRegression": "data/datasetAnalysis/session_id_20260324_101530_ab12cd34/LogisticRegression.joblib"
+		"LogisticRegression": "http://127.0.0.1:8000/data/session_id_20260324_101530_ab12cd34/LogisticRegression.joblib"
+	},
+	"usage_script_paths": {
+		"LogisticRegression": "http://127.0.0.1:8000/model-usage-script/session_id_20260324_101530_ab12cd34/LogisticRegression.joblib"
+	},
+	"usage_notes": {
+		"text_to_numeric": "Text columns are converted by encoders in preprocessing.joblib (typically OneHotEncoder).",
+		"numeric_scaling": "Numeric columns may be standardized/scaled by preprocessing before prediction.",
+		"classification_decoding": "For classification, target_encoder converts predicted numeric classes back to original labels.",
+		"download_instructions": "Download your selected model, preprocessing.joblib, and its usage-script ZIP; then run use_model.py locally."
+	},
+	"preprocessing_validation": {
+		"valid": true,
+		"strict": true,
+		"errors": [],
+		"warnings": [],
+		"metadata": {
+			"session_id": "session_id_20260324_101530_ab12cd34",
+			"problem_type": "classification"
+		},
+		"runtime_versions": {
+			"python": "3.13.5",
+			"sklearn": "1.8.0",
+			"pandas": "2.3.0",
+			"numpy": "2.4.0"
+		}
 	}
 }
 ```
@@ -199,6 +253,13 @@ Common errors for `/ml-models`:
 - 400: unsupported detected problem type
 - 422: invalid target semantics (missing target, too few classes, low numeric validity)
 - 500: training pipeline error
+
+Frontend handling guidance:
+
+- Use `model_paths[modelName]` to download selected model file.
+- Use `usage_script_paths[modelName]` for "How to use in my project" action.
+- Prefer `recommended_model`, `recommended_usage_script_path`, and `recommended_download_label` for one-click CTA on best model.
+- If `preprocessing_validation.valid` is false, warn user that inference consistency is not guaranteed.
 
 ---
 
@@ -236,7 +297,7 @@ Success response (200):
 		}
 	],
 	"model_paths": {
-		"RandomForestClassifier": "data/datasetAnalysis/session_id_20260324_101530_ab12cd34/RandomForestClassifier.joblib"
+		"RandomForestClassifier": "http://127.0.0.1:8000/data/session_id_20260324_101530_ab12cd34/RandomForestClassifier.joblib"
 	},
 	"error_message": null
 }
@@ -399,6 +460,24 @@ Success response (200):
 			"Lasso.joblib",
 			"ElasticNet.joblib",
 			"preprocessing.joblib"
+		],
+		"usage_script_paths": {
+			"LinearRegression": "http://127.0.0.1:8000/model-usage-script/session_id_20260324_101530_ab12cd34/LinearRegression.joblib",
+			"Ridge": "http://127.0.0.1:8000/model-usage-script/session_id_20260324_101530_ab12cd34/Ridge.joblib"
+		},
+		"usage_notes": {
+			"text_to_numeric": "Text columns are converted by encoders in preprocessing.joblib (typically OneHotEncoder).",
+			"numeric_scaling": "Numeric columns may be standardized/scaled by preprocessing before prediction.",
+			"classification_decoding": "For classification, target_encoder converts predicted numeric classes back to original labels.",
+			"download_instructions": "Download your selected model, preprocessing.joblib, and its usage-script ZIP; then run use_model.py locally."
+		}
+	},
+	"preprocessing_validation": {
+		"valid": true,
+		"strict": false,
+		"errors": [],
+		"warnings": [
+			"tracking_metadata missing; training lineage visibility is reduced"
 		]
 	},
 	"files": [
@@ -415,6 +494,108 @@ Common errors:
 
 - 404: session_id not found
 - 500: unable to read session artifacts
+
+---
+
+## 9) Download Per-Model Usage Script Package
+
+Endpoint:
+
+- Method: GET
+- Path: /model-usage-script/{session_id}/{model_file_name}
+- Query param: allow_legacy_override (optional boolean, default true)
+
+Purpose:
+
+- Provides a ready-to-run ZIP package explaining how to use a selected downloaded model locally.
+
+Validation behavior:
+
+- Backend always performs strict preprocessing validation.
+- If strict validation fails:
+  - Download is still allowed only when `allow_legacy_override=true` and compatibility validation passes.
+  - Otherwise API returns 422.
+
+Success response (200):
+
+- Content-Type: application/zip
+- Header: `X-Preprocessing-Validation-Mode`
+  - `strict`: strict validation passed
+  - `legacy-override`: strict failed but compatibility override allowed
+
+ZIP contents:
+
+- use_model.py
+- requirements.txt
+- README.md
+- TECHNICAL_NOTES.md
+- {selected_model}.joblib
+- preprocessing.joblib
+- input_template.csv (included when available)
+
+Example requests:
+
+- GET /model-usage-script/session_id_20260324_101530_ab12cd34/LinearRegression.joblib
+- GET /model-usage-script/session_id_20260324_101530_ab12cd34/LinearRegression.joblib?allow_legacy_override=false
+
+Common errors:
+
+- 400: invalid model_file_name (for example preprocessing.joblib)
+- 404: session/model/preprocessing artifact not found
+- 422: strict validation failed and override disabled (or compatibility validation failed)
+- 500: package generation failed
+
+---
+
+## 10) Validate Session Preprocessing Consistency
+
+Endpoint:
+
+- Method: GET
+- Path: /session/{session_id}/preprocessing/validate
+
+Purpose:
+
+- Exposes both compatibility and strict validation so frontend can guide users before download/inference.
+
+Success response (200):
+
+```json
+{
+	"session_id": "session_id_20260324_101530_ab12cd34",
+	"validation": {
+		"valid": true,
+		"strict": false,
+		"errors": [],
+		"warnings": [],
+		"metadata": {},
+		"runtime_versions": {
+			"python": "3.13.5",
+			"sklearn": "1.8.0",
+			"pandas": "2.3.0",
+			"numpy": "2.4.0"
+		}
+	},
+	"strict_validation": {
+		"valid": false,
+		"strict": true,
+		"errors": ["tracking_metadata missing in strict mode"],
+		"warnings": [],
+		"metadata": {},
+		"runtime_versions": {
+			"python": "3.13.5",
+			"sklearn": "1.8.0",
+			"pandas": "2.3.0",
+			"numpy": "2.4.0"
+		}
+	}
+}
+```
+
+Common errors:
+
+- 404: session_id not found
+- 500: preprocessing validation failure
 
 ---
 
@@ -437,7 +618,7 @@ Common status codes:
 
 ---
 
-## 9) Pipeline Quality Fix Log And Baseline Checkpoints
+## 11) Pipeline Quality Fix Log And Baseline Checkpoints
 
 This project includes targeted data-pipeline hardening to reduce leakage and improve stability.
 

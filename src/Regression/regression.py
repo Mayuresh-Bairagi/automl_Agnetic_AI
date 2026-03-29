@@ -1,11 +1,13 @@
 import os
 import sys
 import importlib
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 import joblib
 import numpy as np
 import pandas as pd
+import sklearn as sklearn_pkg
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor
 from sklearn.impute import SimpleImputer
@@ -359,10 +361,32 @@ class AutoMLRegressor:
         X_test_t = self._transform_with_preprocessor(X_test.copy())
 
         # Persist preprocessing artefacts
+        tracked_feature_names = list(getattr(self.preprocessor, "feature_names_in_", []))
         self.preprocessing_objects = {
             "preprocessor": self.preprocessor,
+            "target_encoder": None,
             "dropped_features": self.dropped_features,
             "pruned_features": pruned_map,
+            "tracking_metadata": {
+                "session_id": self.session_id,
+                "problem_type": "regression",
+                "target_column": self.target_col,
+                "created_at": datetime.utcnow().isoformat() + "Z",
+                "numeric_features": numeric_cols,
+                "categorical_features": categorical_cols,
+                "feature_names_in": tracked_feature_names,
+                "dropped_features": self.dropped_features,
+                "train_rows": int(len(X_train)),
+                "test_rows": int(len(X_test)),
+                "cv_folds": int(cv),
+                "skip_heavy": bool(skip_heavy),
+                "library_versions": {
+                    "python": sys.version.split()[0],
+                    "sklearn": sklearn_pkg.__version__,
+                    "pandas": pd.__version__,
+                    "numpy": np.__version__,
+                },
+            },
         }
         joblib.dump(
             self.preprocessing_objects,

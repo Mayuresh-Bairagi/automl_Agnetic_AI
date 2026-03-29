@@ -1,9 +1,10 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from io import BytesIO
 from datetime import datetime
+import joblib
 import pandas as pd
 import uvicorn
 
@@ -25,6 +26,12 @@ from src.problem_statement.target_variable import TargetVariable
 from src.Classifier.MLClassifier import AutoMLClassifier
 from src.agent.automl_agent import AutoMLAgent
 from src.data_qa.dataset_qa import DatasetQA
+from src.inference.usage_package import build_usage_zip_bytes, get_usage_notes
+from src.inference.model_explainer import build_best_model_summary
+from src.session_tracking.preprocessing_tracker import (
+    load_and_validate_preprocessing_artifact,
+    validate_preprocessing_artifact,
+)
 
 # ---------------------------------------------------------------------------
 # Application setup
@@ -34,6 +41,22 @@ _MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # 50 MB
 _MIN_ROWS = 10
 _MIN_COLS = 2
 _ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls"}
+
+
+def _coerce_numeric_target(series: pd.Series) -> pd.Series:
+    """Coerce user-provided numeric-like targets to numbers for validation.
+
+    Handles common dataset artifacts such as thousand separators, currency
+    symbols, units, and whitespace (for example: "3,25,000", "$12000", "45 km").
+    """
+    if pd.api.types.is_numeric_dtype(series):
+        return pd.to_numeric(series, errors="coerce")
+
+    normalized = series.astype("string").str.strip()
+    normalized = normalized.str.replace(",", "", regex=False)
+    normalized = normalized.str.replace(r"[^0-9.\-]+", "", regex=True)
+    normalized = normalized.replace({"": pd.NA, "-": pd.NA, ".": pd.NA, "-.": pd.NA})
+    return pd.to_numeric(normalized, errors="coerce")
 
 app = FastAPI(
     title="AutoML API",
@@ -83,6 +106,9 @@ async def upload_file(file: UploadFile = File(...)):
     * Supported formats: ``.csv``, ``.xlsx``, ``.xls``
     """
     try:
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="Uploaded file must include a filename")
+
         suffix = Path(file.filename).suffix.lower()
         if suffix not in _ALLOWED_EXTENSIONS:
             raise HTTPException(
@@ -149,6 +175,8 @@ async def eda(request: requestEDA):
 
         return {"session_id": session_id, "eda_html_path": html_url}
 
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"EDA dependency unavailable: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"EDA generation failed: {str(e)}")
 
@@ -186,14 +214,22 @@ async def ml_model(request: request_ml_models):
                 )
 
         if problem_statement_type.lower() == "regression":
-            numeric_target = pd.to_numeric(df[target_col], errors="coerce")
+            numeric_target = _coerce_numeric_target(df[target_col])
             valid_ratio = float(numeric_target.notna().mean()) if len(numeric_target) else 0.0
             if valid_ratio < 0.8:
+                non_numeric_examples = (
+                    df.loc[numeric_target.isna(), target_col]
+                    .dropna()
+                    .astype(str)
+                    .head(5)
+                    .tolist()
+                )
                 raise HTTPException(
                     status_code=422,
                     detail=(
                         f"Regression target '{target_col}' is not sufficiently numeric "
-                        f"(valid ratio={valid_ratio:.2f})."
+                        f"(valid ratio={valid_ratio:.2f}). "
+                        f"Examples of non-numeric values: {non_numeric_examples}"
                     ),
                 )
 
@@ -232,13 +268,51 @@ async def ml_model(request: request_ml_models):
             name: f"{base_url}/{session_id}/{Path(path).name}" 
             for name, path in model_paths.items()
         }
+        usage_script_paths = {
+            name: f"http://127.0.0.1:8000/model-usage-script/{session_id}/{Path(path).name}"
+            for name, path in model_paths.items()
+        }
+        preprocessing_validation = load_and_validate_preprocessing_artifact(
+            session_path=folder_path / session_id,
+            session_id=session_id,
+            strict=True,
+        )
+
+        best_model_summary = build_best_model_summary(
+            problem_type=problem_statement_type,
+            results=results_dict,
+        )
+        recommended_model = best_model_summary.get("best_model")
+        recommended_model_path = (
+            downloadable_model_paths.get(recommended_model)
+            if isinstance(recommended_model, str)
+            else None
+        )
+        recommended_usage_script_path = (
+            usage_script_paths.get(recommended_model)
+            if isinstance(recommended_model, str)
+            else None
+        )
+        recommended_download_label = (
+            f"Download and run {recommended_model} package"
+            if isinstance(recommended_model, str) and recommended_model
+            else "Download and run recommended model package"
+        )
 
         return {
             "session_id": session_id,
             "problem_type": problem_statement_type,
             "target_variable": result.get("target_variable"),
             "results": results_dict,
+            "best_model_summary": best_model_summary,
+            "recommended_model": recommended_model,
+            "recommended_model_path": recommended_model_path,
+            "recommended_usage_script_path": recommended_usage_script_path,
+            "recommended_download_label": recommended_download_label,
             "model_paths": downloadable_model_paths,
+            "usage_script_paths": usage_script_paths,
+            "usage_notes": get_usage_notes(),
+            "preprocessing_validation": preprocessing_validation,
         }
 
     except HTTPException:
@@ -358,6 +432,144 @@ async def dashboard_charts(request: DashboardRequest):
 
 
 # ---------------------------------------------------------------------------
+# Per-model usage script download endpoint
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/model-usage-script/{session_id}/{model_file_name}",
+    summary="Download per-model usage script package",
+)
+async def download_model_usage_script(
+    session_id: str,
+    model_file_name: str,
+    allow_legacy_override: bool = True,
+):
+    """
+    Download a ZIP package with a beginner-friendly Python script and docs
+    showing how to run local predictions with a selected downloaded model.
+    """
+    try:
+        if not model_file_name.lower().endswith(".joblib"):
+            raise HTTPException(status_code=400, detail="model_file_name must end with .joblib")
+
+        if model_file_name.lower() == "preprocessing.joblib":
+            raise HTTPException(status_code=400, detail="Choose a trained model file, not preprocessing.joblib")
+
+        session_path = folder_path / session_id
+        model_path = session_path / model_file_name
+        preprocessing_path = session_path / "preprocessing.joblib"
+
+        if not session_path.exists() or not session_path.is_dir():
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+        if not model_path.exists():
+            raise HTTPException(status_code=404, detail=f"Model file '{model_file_name}' not found in session")
+
+        if not preprocessing_path.exists():
+            raise HTTPException(status_code=404, detail="preprocessing.joblib not found in session")
+
+        preprocessing_obj = joblib.load(preprocessing_path)
+        preprocessing_validation = validate_preprocessing_artifact(
+            preprocessing_obj=preprocessing_obj,
+            session_id=session_id,
+            strict=False,
+        )
+        strict_preprocessing_validation = validate_preprocessing_artifact(
+            preprocessing_obj=preprocessing_obj,
+            session_id=session_id,
+            strict=True,
+        )
+
+        strict_valid = bool(strict_preprocessing_validation.get("valid"))
+        legacy_valid = bool(preprocessing_validation.get("valid"))
+
+        if not strict_valid and not (allow_legacy_override and legacy_valid):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "message": (
+                        "Strict preprocessing validation failed and legacy override is disabled "
+                        "or legacy validation failed"
+                    ),
+                    "strict_validation": strict_preprocessing_validation,
+                    "legacy_validation": preprocessing_validation,
+                },
+            )
+
+        input_template_csv = None
+        try:
+            processed_file_path = session_path / "processed_file.csv"
+            if processed_file_path.exists():
+                preprocessor = preprocessing_obj.get("preprocessor")
+                expected_cols = list(getattr(preprocessor, "feature_names_in_", []))
+                sample_df = pd.read_csv(processed_file_path, nrows=20)
+                if expected_cols:
+                    sample_df = sample_df.reindex(columns=expected_cols)
+                input_template_csv = sample_df.head(10).to_csv(index=False)
+        except Exception:
+            input_template_csv = None
+
+        zip_bytes = build_usage_zip_bytes(
+            model_file_name=model_file_name,
+            model_bytes=model_path.read_bytes(),
+            preprocessing_bytes=preprocessing_path.read_bytes(),
+            input_template_csv=input_template_csv,
+        )
+        zip_name = f"how_to_use_{Path(model_file_name).stem}.zip"
+
+        validation_mode = "strict" if strict_valid else "legacy-override"
+        return Response(
+            content=zip_bytes,
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": f'attachment; filename="{zip_name}"',
+                "X-Preprocessing-Validation-Mode": validation_mode,
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to build usage script package: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Preprocessing validation endpoint
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/session/{session_id}/preprocessing/validate",
+    summary="Validate preprocessing tracking and schema consistency for a session",
+)
+async def validate_session_preprocessing(session_id: str):
+    """Validate presence and integrity of preprocessing metadata for inference consistency."""
+    try:
+        session_path = folder_path / session_id
+        if not session_path.exists() or not session_path.is_dir():
+            raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+
+        validation = load_and_validate_preprocessing_artifact(
+            session_path=session_path,
+            session_id=session_id,
+            strict=False,
+        )
+        strict_validation = load_and_validate_preprocessing_artifact(
+            session_path=session_path,
+            session_id=session_id,
+            strict=True,
+        )
+        return {
+            "session_id": session_id,
+            "validation": validation,
+            "strict_validation": strict_validation,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to validate preprocessing: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
 # Session history endpoint
 # ---------------------------------------------------------------------------
 
@@ -404,6 +616,16 @@ async def session_history(session_id: str):
             for p in model_files
             if p.lower() != "preprocessing.joblib"
         ]
+        usage_script_paths = {
+            p.replace(".joblib", ""): f"http://127.0.0.1:8000/model-usage-script/{session_id}/{p}"
+            for p in model_files
+            if p.lower() != "preprocessing.joblib"
+        }
+        preprocessing_validation = load_and_validate_preprocessing_artifact(
+            session_path=session_path,
+            session_id=session_id,
+            strict=False,
+        )
 
         files = []
         for f in sorted(session_path.iterdir(), key=lambda x: x.name.lower()):
@@ -438,7 +660,10 @@ async def session_history(session_id: str):
                 "count": len(trained_models),
                 "names": trained_models,
                 "files": model_files,
+                "usage_script_paths": usage_script_paths,
+                "usage_notes": get_usage_notes(),
             },
+            "preprocessing_validation": preprocessing_validation,
             "files": files,
         }
 

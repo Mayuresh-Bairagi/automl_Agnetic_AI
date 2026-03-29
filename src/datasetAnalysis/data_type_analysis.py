@@ -30,6 +30,22 @@ class DataTypeAnalyzer:
             self.log.error(f"Error initializing data type analysis ",error = e)
             raise AutoML_Exception(f"Error initializing data type analysis: {e}")
 
+    @staticmethod
+    def _coerce_numeric_like(series: pd.Series) -> pd.Series:
+        """Convert numeric-like text values into numeric values.
+
+        Handles comma-separated numbers, currency markers, unit text, and
+        surrounding whitespace while preserving non-convertible rows as NaN.
+        """
+        if pd.api.types.is_numeric_dtype(series):
+            return pd.to_numeric(series, errors="coerce")
+
+        normalized = series.astype("string").str.strip()
+        normalized = normalized.str.replace(",", "", regex=False)
+        normalized = normalized.str.replace(r"[^0-9.\-]+", "", regex=True)
+        normalized = normalized.replace({"": pd.NA, "-": pd.NA, ".": pd.NA, "-.": pd.NA})
+        return pd.to_numeric(normalized, errors="coerce")
+
     def get_column_info(self, df, sample_size=5):
         info = {}
         for col in df.columns:
@@ -84,7 +100,7 @@ class DataTypeAnalyzer:
                 suggested_dtype = "boolean"
                 reason = "Detected boolean dtype"
             else:
-                numeric = pd.to_numeric(non_null, errors="coerce")
+                numeric = self._coerce_numeric_like(non_null)
                 numeric_ratio = float(numeric.notna().mean()) if len(non_null) else 0.0
                 if numeric_ratio >= 0.9 and len(non_null) > 0:
                     is_integer_like = (numeric.dropna() % 1 == 0).all()
@@ -160,14 +176,36 @@ class DataTypeAnalyzer:
             suggested = col['suggested_dtype']
 
             try:
+                if name not in df.columns:
+                    continue
+
                 if suggested == "date":
                     df[name] = pd.to_datetime(df[name], errors="coerce", dayfirst=True)
                 elif suggested == "time":
                     df[name] = pd.to_datetime(df[name], errors="coerce").dt.time
                 elif suggested in ["integer", "int"]:
-                    df[name] = df[name].astype(int)
+                    numeric = self._coerce_numeric_like(df[name])
+                    # Apply conversion only when majority of rows are numeric-like.
+                    ratio = float(numeric.notna().mean()) if len(df[name]) else 0.0
+                    if ratio >= 0.7:
+                        df[name] = numeric.round().astype("Int64")
+                    else:
+                        self.log.warning(
+                            "Skipping integer conversion due to low numeric parse ratio",
+                            column=name,
+                            parse_ratio=round(ratio, 4),
+                        )
                 elif suggested == "float":
-                    df[name] = df[name].astype(float)
+                    numeric = self._coerce_numeric_like(df[name])
+                    ratio = float(numeric.notna().mean()) if len(df[name]) else 0.0
+                    if ratio >= 0.7:
+                        df[name] = numeric.astype("Float64")
+                    else:
+                        self.log.warning(
+                            "Skipping float conversion due to low numeric parse ratio",
+                            column=name,
+                            parse_ratio=round(ratio, 4),
+                        )
                 else:
                     pass
             except Exception as e:
